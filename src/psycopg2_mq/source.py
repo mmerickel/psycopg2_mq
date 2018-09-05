@@ -45,3 +45,23 @@ class MQSource:
         log.info('enqueuing job=%s on queue=%s, method=%s',
                  job.id, queue, method)
         return str(job.id)
+
+    @property
+    def query(self):
+        return self.dbsession.query(self.model.Job)
+
+    def find_job(self, id):
+        return self.query.get(id)
+
+    def retry(self, job_id):
+        job = self.find_job(job_id)
+        if job is None or job.state not in {
+            self.model.JobStates.RUNNING,
+            self.model.JobStates.FAILED,
+            self.model.JobStates.LOST,
+        }:
+            raise RuntimeError('job is not finished, cannot retry')
+        return self.call(
+            job.queue, job.method, job.params,
+            when=job.scheduled_time,
+        )
