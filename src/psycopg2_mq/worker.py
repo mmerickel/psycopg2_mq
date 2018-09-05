@@ -7,6 +7,7 @@ import select
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
+import threading
 
 from .util import (
     clamp,
@@ -185,7 +186,10 @@ def claim_pending_job(ctx, now=None):
 
 
 def handle_job(ctx, job):
+    current_thread = threading.current_thread()
+    old_thread_name = current_thread.name
     try:
+        current_thread.name = f'{old_thread_name},job={job.id}'
         queue = ctx._queues[job.queue]
         result = queue.execute_job(job)
 
@@ -199,6 +203,9 @@ def handle_job(ctx, job):
 
     else:
         finish_job(ctx, job.id, True, result)
+
+    finally:
+        current_thread.name = old_thread_name
 
 
 def finish_job(ctx, job_id, success, result):
