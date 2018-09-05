@@ -44,7 +44,7 @@ the following attributes:
 - ``id``
 - ``queue``
 - ``method``
-- ``params``
+- ``args``
 
 As a convenience, there is an ``extend(**kw)`` method which can be used to
 add extra attributes to the object. This is useful in individual queues to

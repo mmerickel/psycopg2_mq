@@ -52,7 +52,7 @@ def make_default_model(metadata, JobStates=JobStates):
 
         queue = Column(Text, nullable=False, index=True)
         method = Column(Text, nullable=False)
-        params = Column(pg.JSONB, nullable=False)
+        args = Column(pg.JSONB, nullable=False)
         result = Column(pg.JSONB)
 
         lock_id = Column(Integer, nullable=True, unique=True)

@@ -28,7 +28,7 @@ class MQSource:
         job = self.model.Job(
             queue=queue,
             method=method,
-            params=args,
+            args=args,
             created_time=now,
             scheduled_time=when,
             state=self.model.JobStates.PENDING,
@@ -62,6 +62,6 @@ class MQSource:
         }:
             raise RuntimeError('job is not finished, cannot retry')
         return self.call(
-            job.queue, job.method, job.params,
+            job.queue, job.method, job.args,
             when=job.scheduled_time,
         )
