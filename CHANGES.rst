@@ -1,3 +1,8 @@
+0.1.3 (2018-09-04)
+==================
+
+- Rename the thread to contain the job id while it's handling a job.
+
 0.1.2 (2018-09-04)
 ==================
 
