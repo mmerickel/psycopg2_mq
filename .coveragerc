@@ -1,0 +1,14 @@
+[run]
+parallel = true
+source =
+    psycopg2_mq
+    tests
+
+[paths]
+source =
+    src/psycopg2_mq
+    */site-packages/psycopg2_mq
+
+[report]
+show_missing = true
+precision = 2

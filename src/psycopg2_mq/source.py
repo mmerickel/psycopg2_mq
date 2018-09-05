@@ -44,7 +44,7 @@ class MQSource:
 
         log.info('enqueuing job=%s on queue=%s, method=%s',
                  job.id, queue, method)
-        return str(job.id)
+        return job
 
     @property
     def query(self):
