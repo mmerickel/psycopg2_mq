@@ -8,7 +8,6 @@ readme = readfile('README.rst')
 changes = readfile('CHANGES.rst')
 
 requires = [
-    'psycopg2',
     'SQLAlchemy',
 ]
 
