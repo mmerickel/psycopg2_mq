@@ -1,3 +1,8 @@
+0.1.4 (2019-05-09)
+==================
+
+- More safely serialize exception objects when jobs fail.
+
 0.1.3 (2018-09-04)
 ==================
 
