@@ -8,10 +8,12 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
 import threading
+import traceback
 
 from .util import (
     clamp,
     int_to_datetime,
+    safe_object,
 )
 
 
@@ -82,6 +84,13 @@ class MQWorker:
 
         finally:
             self._running = False
+
+    def result_from_error(self, ex):
+        return {
+            'exc': ex.__class__.__qualname__,
+            'args': safe_object(ex.args),
+            'tb': traceback.format_tb(ex.__traceback__),
+        }
 
 
 def engine_from_sessionmaker(maker):
@@ -195,10 +204,7 @@ def handle_job(ctx, job):
 
     # BaseException to catch KeyboardInterrupt
     except BaseException as ex:
-        finish_job(ctx, job.id, False, {
-            'exc_type': ex.__class__.__name__,
-            'args': ex.args,
-        })
+        finish_job(ctx, job.id, False, ctx.result_from_error(ex))
         log.exception('error while handling job=%s', job.id)
 
     else:
