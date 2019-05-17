@@ -1,5 +1,4 @@
 from collections.abc import Mapping
-from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 EPOCH = datetime(1970, 1, 1)
@@ -22,10 +21,10 @@ def safe_object(obj, *, memo=None):
     if memo is None:
         memo = Memo()
     if memo.memoize(obj):
-        return CYCLE_MARKER
+        return '<cycle type={}>'.format(type(obj).__name__)
 
     try:
-        if isinstance(obj, Sequence):
+        if isinstance(obj, (tuple, list)):
             return [
                 safe_object(x, memo=memo)
                 for x in obj
@@ -76,9 +75,6 @@ def safe_repr(value):
             return rv
     except Exception:
         return '<broken repr>'
-
-
-CYCLE_MARKER = object()
 
 
 class Memo:
