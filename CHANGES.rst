@@ -1,3 +1,8 @@
+0.1.5 (2019-05-17)
+==================
+
+- Fix a regression when serializing errors with strings or cycles.
+
 0.1.4 (2019-05-09)
 ==================
 
