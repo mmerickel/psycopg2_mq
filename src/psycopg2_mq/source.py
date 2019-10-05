@@ -18,7 +18,7 @@ class MQSource:
         self.dbsession = dbsession
         self.model = model
 
-    def call(self, queue, method, args, when=None, now=None):
+    def call(self, queue, method, args, when=None, now=None, job_kwargs={}):
         if now is None:
             now = datetime.utcnow()
         if when is None:
@@ -32,6 +32,7 @@ class MQSource:
             created_time=now,
             scheduled_time=when,
             state=self.model.JobStates.PENDING,
+            **job_kwargs,
         )
         self.dbsession.add(job)
         self.dbsession.flush()
