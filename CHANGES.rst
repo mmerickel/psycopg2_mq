@@ -1,3 +1,9 @@
+0.1.6 (2019-10-07)
+==================
+
+- Support passing custom kwargs to the job in ``psycopg2_mq.MQSource.call``
+  to allow custom columns on the job table.
+
 0.1.5 (2019-05-17)
 ==================
 
