@@ -16,11 +16,11 @@ class MQSource:
         *,
         dbsession,
         model,
-        tm=None,
+        transaction_manager=None,
     ):
         self.dbsession = dbsession
         self.model = model
-        self.tm = tm
+        self.transaction_manager = transaction_manager
 
     def call(
         self,
@@ -95,7 +95,7 @@ class MQSource:
             epoch_seconds = datetime_to_int(when)
             payload = json.dumps({'j': job_id, 't': epoch_seconds})
             self.dbsession.execute(sa.select([sa.func.pg_notify(queue, payload)]))
-            if self.tm:
+            if self.transaction_manager:
                 mark_changed(self.dbsession)
 
             log.info('enqueuing job=%s on queue=%s, method=%s',
