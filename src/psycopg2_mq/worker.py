@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
 import threading
+import time
 import traceback
 
 from .util import (
@@ -31,6 +32,10 @@ pg_locks = table(
     column('classid', sa.Integer()),
     column('objid', sa.Integer()),
 )
+
+
+class ExitRequest(Exception):
+    """ Raised to abort the event loop."""
 
 
 class JobContext:
@@ -82,6 +87,9 @@ class MQWorker:
         try:
             with connect_db(self), connect_pipes(self):
                 eventloop(self)
+
+        except ExitRequest:
+            pass
 
         finally:
             self._running = False
@@ -278,7 +286,7 @@ def finish_job(ctx, job_id, success, result, cursor=None):
                 cursor_obj.properties = cursor or {}
 
         elif cursor is not None:
-            log.warn('ignoring cursor for job without a cursor_key')
+            log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
 
@@ -337,8 +345,25 @@ def flush_pending_jobs(ctx):
             break
         handle_job(ctx, job)
 
-    if ctx._next_date is not None and ctx._next_date < datetime.utcnow():
-        ctx._next_date = None
+    if ctx._running:
+        set_next_date(ctx)
+
+
+def apply_jitter(ctx):
+    if not ctx._jitter:
+        return
+
+    timeout = random.uniform(0, ctx._jitter)
+    log.debug('applying jitter=%.3f', timeout)
+    # it's os-dependent using select with 3 empty lists so if no rpipe
+    # then just fallback to time.sleep
+    if ctx._rpipe is not None:
+        result = select.select([ctx._rpipe], [], [], timeout)
+        if ctx._rpipe in result[0]:
+            raise ExitRequest
+
+    else:
+        time.sleep(timeout)
 
 
 class ListenEvent:
@@ -391,11 +416,12 @@ def get_next_event(ctx):
     if ctx._next_date is None:
         timeout = ctx._timeout
     else:
-        # never a negative timeout
-        timeout = clamp(
-            (ctx._next_date - datetime.utcnow()).total_seconds(),
-            0, ctx._timeout,
-        )
+        # add some jitter to the timeout if we are waiting on a future event
+        # so that workers are staggered when they wakeup if they are all
+        # waiting on the same event
+        timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
+        timeout = clamp(timeout, 0, ctx._timeout)
+
     timeout += random.uniform(0, ctx._jitter)
 
     log.debug('watching for events with timeout=%s', timeout)
@@ -405,38 +431,41 @@ def get_next_event(ctx):
         return None
 
     elif ctx._rpipe in result[0]:
-        return ctx._rpipe
+        raise ExitRequest
 
     else:
         conn.poll()
-        return handle_notifies()
+        event = handle_notifies()
+        if event is not None:
+            # pause briefly so that all workers that just got notified
+            # don't try to poll for jobs at the exact same time
+            apply_jitter(ctx)
+        return event
 
 
 def eventloop(ctx):
     mark_lost_jobs(ctx)
     listen_for_events(ctx)
     flush_pending_jobs(ctx)
-    set_next_date(ctx)
     while ctx._running:
         event = get_next_event(ctx)
-        if event is ctx._rpipe:
-            continue
 
         # there might be a job to execute if there was a timeout
         if event is None or event.job_time <= datetime.utcnow():
             flush_pending_jobs(ctx)
 
-            # perform cleanup operations if a timeout occurs
+            # perform cleanup operations if a timeout occurred
             if event is None:
                 mark_lost_jobs(ctx)
 
         # start tracking this job through timeouts
         elif ctx._next_date is None or event.job_time < ctx._next_date:
             ctx._next_date = event.job_time
-            log.debug('tracking new job=%s scheduled in %.3f seconds',
-                      event.job_id,
-                      (ctx._next_date - datetime.utcnow()).total_seconds())
+            log.debug(
+                'tracking job=%s scheduled in %.3f seconds',
+                event.job_id,
+                (ctx._next_date - datetime.utcnow()).total_seconds(),
+            )
 
         else:
-            log.debug('ignoring job=%s, too far into the future',
-                      event.job_id)
+            log.debug('ignoring job=%s, too far into the future', event.job_id)
