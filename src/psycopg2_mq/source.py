@@ -116,7 +116,6 @@ class MQSource:
     def retry(self, job_id):
         job = self.find_job(job_id)
         if job is None or job.state not in {
-            self.model.JobStates.RUNNING,
             self.model.JobStates.FAILED,
             self.model.JobStates.LOST,
         }:
@@ -124,4 +123,5 @@ class MQSource:
         return self.call(
             job.queue, job.method, job.args,
             when=job.scheduled_time,
+            cursor_key=job.cursor_key,
         )

@@ -272,6 +272,7 @@ def finish_job(ctx, job_id, success, result, cursor=None):
                     key=job.cursor_key,
                     properties=cursor,
                 )
+                db.add(cursor_obj)
 
             elif cursor_obj.properties != cursor:
                 cursor_obj.properties = cursor or {}
