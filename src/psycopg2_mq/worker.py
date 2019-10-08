@@ -39,10 +39,7 @@ class JobContext:
         self.queue = queue
         self.method = method
         self.args = args
-
-        # do not add a cursor attribute unless the job supports cursors
-        if cursor is not None:
-            self.cursor = cursor
+        self.cursor = cursor
 
     def extend(self, **kw):
         for k, v in kw.items():
@@ -169,7 +166,7 @@ def claim_pending_job(ctx, now=None):
             db.query(model.Job.cursor_key)
             .filter(
                 model.Job.state == model.JobStates.RUNNING,
-                model.Job.cursor_key.isnot_(None),
+                model.Job.cursor_key.isnot(None),
             )
             .subquery()
         )
@@ -277,7 +274,10 @@ def finish_job(ctx, job_id, success, result, cursor=None):
                 )
 
             elif cursor_obj.properties != cursor:
-                cursor_obj.properties = cursor
+                cursor_obj.properties = cursor or {}
+
+        elif cursor is not None:
+            log.warn('ignoring cursor for job without a cursor_key')
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
 

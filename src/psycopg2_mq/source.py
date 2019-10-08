@@ -66,6 +66,7 @@ class MQSource:
                 )
                 .on_conflict_do_nothing(
                     index_elements=[Job.cursor_key],
+                    index_where=(Job.state == JobStates.PENDING),
                 )
                 .returning(Job.id)
             )
