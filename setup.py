@@ -9,6 +9,8 @@ changes = readfile('CHANGES.rst')
 
 requires = [
     'SQLAlchemy',
+    'transaction',
+    'zope.sqlalchemy',
 ]
 
 tests_require = [

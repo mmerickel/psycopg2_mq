@@ -34,11 +34,15 @@ pg_locks = table(
 
 
 class JobContext:
-    def __init__(self, id, queue, method, args):
+    def __init__(self, id, queue, method, args, cursor=None):
         self.id = id
         self.queue = queue
         self.method = method
         self.args = args
+
+        # do not add a cursor attribute unless the job supports cursors
+        if cursor is not None:
+            self.cursor = cursor
 
     def extend(self, **kw):
         for k, v in kw.items():
@@ -161,13 +165,26 @@ def claim_pending_job(ctx, now=None):
         now = datetime.utcnow()
 
     with dbsession(ctx) as (db, model):
+        running_cursor_sq = (
+            db.query(model.Job.cursor_key)
+            .filter(
+                model.Job.state == model.JobStates.RUNNING,
+                model.Job.cursor_key.isnot_(None),
+            )
+            .subquery()
+        )
         job = (
             db.query(model.Job)
-            .with_for_update(skip_locked=True)
+            .outerjoin(
+                running_cursor_sq,
+                running_cursor_sq.c.cursor_key == model.Job.cursor_key,
+            )
+            .with_for_update(of=model.Job, skip_locked=True)
             .filter(
                 model.Job.state == model.JobStates.PENDING,
                 model.Job.queue.in_(ctx._queues.keys()),
                 model.Job.scheduled_time <= now,
+                running_cursor_sq.c.cursor_key.is_(None),
             )
             .order_by(
                 model.Job.scheduled_time.asc(),
@@ -177,6 +194,18 @@ def claim_pending_job(ctx, now=None):
         )
 
         if job is not None:
+            cursor = None
+            if job.cursor_key is not None:
+                cursor = (
+                    db.query(model.JobCursor)
+                    .filter(model.JobCursor.key == job.cursor_key)
+                    .first()
+                )
+                if cursor is not None:
+                    cursor = cursor.properties
+                else:
+                    cursor = {}
+
             job.lock_id = get_lock_id(db, ctx._lock_key, job)
             job.state = model.JobStates.RUNNING
             job.start_time = datetime.utcnow()
@@ -191,6 +220,7 @@ def claim_pending_job(ctx, now=None):
                 queue=job.queue,
                 method=job.method,
                 args=job.args,
+                cursor=cursor,
             )
 
 
@@ -208,13 +238,13 @@ def handle_job(ctx, job):
         log.exception('error while handling job=%s', job.id)
 
     else:
-        finish_job(ctx, job.id, True, result)
+        finish_job(ctx, job.id, True, result, job.cursor)
 
     finally:
         current_thread.name = old_thread_name
 
 
-def finish_job(ctx, job_id, success, result):
+def finish_job(ctx, job_id, success, result, cursor=None):
     with dbsession(ctx) as (db, model):
         state = (
             model.JobStates.COMPLETED
@@ -232,6 +262,22 @@ def finish_job(ctx, job_id, success, result):
         job.result = result
         job.end_time = datetime.utcnow()
         job.lock_id = None
+
+        if job.cursor_key is not None:
+            cursor_obj = (
+                db.query(model.JobCursor)
+                .filter(model.JobCursor.key == job.cursor_key)
+                .with_for_update()
+                .first()
+            )
+            if cursor_obj is None:
+                cursor_obj = model.JobCursor(
+                    key=job.cursor_key,
+                    properties=cursor,
+                )
+
+            elif cursor_obj.properties != cursor:
+                cursor_obj.properties = cursor
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
 
