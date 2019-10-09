@@ -1,3 +1,9 @@
+0.2 (2019-10-09)
+================
+
+- Add cursor support for jobs. This requires a schema migration to add
+  a ``cursor_key`` column, a new ``JobCursor`` model, and some new indices.
+
 0.1.6 (2019-10-07)
 ==================
 

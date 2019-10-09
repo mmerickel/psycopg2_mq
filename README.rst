@@ -45,10 +45,33 @@ the following attributes:
 - ``queue``
 - ``method``
 - ``args``
+- ``cursor``
 
 As a convenience, there is an ``extend(**kw)`` method which can be used to
 add extra attributes to the object. This is useful in individual queues to
 define a contract between a queue and its methods.
+
+Cursors
+-------
+
+A ``Job`` can be scheduled with a ``cursor_key``. There can only be one
+pending job and one running job for any cursor. New jobs scheduled while
+another one is pending will be ignored and the pending job is returned.
+
+A ``job.cursor`` dict is provided to the workers containing the cursor data,
+and is saved back to the database when the job is completed. This effectively
+gives jobs some persistent, shared state, and serializes all jobs over a given
+cursor.
+
+Scheduled Jobs
+--------------
+
+A ``Job`` can be scheduled in the future by providing a ``datetime`` object
+to the ``when`` argument. This, along with a cursor key, can provide a nice
+throttle on how frequently a job runs. For example, schedule jobs to run in
+30 seconds with a ``cursor_key`` and any jobs that are scheduled in the
+meantime will be dropped. The assumption here is that the arguments are
+constant and data to continue execute is in the cursor or another table.
 
 Example Worker
 ==============
