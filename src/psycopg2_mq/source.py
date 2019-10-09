@@ -94,7 +94,9 @@ class MQSource:
         if job_is_new:
             epoch_seconds = datetime_to_int(when)
             payload = json.dumps({'j': job_id, 't': epoch_seconds})
-            self.dbsession.execute(sa.select([sa.func.pg_notify(queue, payload)]))
+            self.dbsession.execute(sa.select([
+                sa.func.pg_notify(queue, payload),
+            ]))
             if self.transaction_manager:
                 mark_changed(self.dbsession)
 
