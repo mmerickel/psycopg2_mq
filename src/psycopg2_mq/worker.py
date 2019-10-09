@@ -358,12 +358,13 @@ def apply_jitter(ctx):
     # it's os-dependent using select with 3 empty lists so if no rpipe
     # then just fallback to time.sleep
     if ctx._rpipe is not None:
-        result = select.select([ctx._rpipe], [], [], timeout)
-        if ctx._rpipe in result[0]:
-            raise ExitRequest
+        select.select([ctx._rpipe], [], [], timeout)
 
     else:
         time.sleep(timeout)
+
+    if not ctx._running:
+        raise ExitRequest
 
 
 class ListenEvent:
@@ -426,14 +427,10 @@ def get_next_event(ctx):
 
     log.debug('watching for events with timeout=%s', timeout)
     result = select.select(rlist, [], [], timeout)
-    if result == ([], [], []):
-        log.debug('timeout, no events detected')
-        return None
-
-    elif ctx._rpipe in result[0]:
+    if not ctx._running:
         raise ExitRequest
 
-    else:
+    if conn in result[0]:
         conn.poll()
         event = handle_notifies()
         if event is not None:
