@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 import random
@@ -74,7 +74,7 @@ class MQWorker:
 
         self._dbconn = None
         self._rpipe, self._wpipe = None, None
-        self._next_date = None
+        self._next_date = datetime.max
 
     def shutdown_gracefully(self):
         self._running = False
@@ -331,11 +331,15 @@ def set_next_date(ctx):
             .limit(1)
             .scalar()
         )
-    if ctx._next_date is not None and ctx._next_date > datetime.utcnow():
-        log.debug(
-            'tracking next job in %.3f seconds',
-            (ctx._next_date - datetime.utcnow()).total_seconds(),
-        )
+
+    if ctx._next_date is None:
+        log.debug('no pending jobs')
+        ctx._next_date = datetime.max
+
+    else:
+        when = (ctx._next_date - datetime.utcnow()).total_seconds()
+        if when > 0:
+            log.debug('tracking next job in %.3f seconds', when)
 
 
 def flush_pending_jobs(ctx):
@@ -415,17 +419,11 @@ def get_next_event(ctx):
     if conn.notifies:
         return handle_notifies()
 
-    if ctx._next_date is None:
-        timeout = ctx._timeout
-    else:
-        # add some jitter to the timeout if we are waiting on a future event
-        # so that workers are staggered when they wakeup if they are all
-        # waiting on the same event
-        timeout = clamp(
-            (ctx._next_date - datetime.utcnow()).total_seconds(),
-            0,
-            ctx._timeout,
-        )
+    # add some jitter to the timeout if we are waiting on a future event
+    # so that workers are staggered when they wakeup if they are all
+    # waiting on the same event
+    timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
+    timeout = clamp(timeout, 0, ctx._timeout)
     timeout += random.uniform(0, ctx._jitter)
 
     log.debug('watching for events with timeout=%.3f', timeout)
@@ -437,7 +435,7 @@ def get_next_event(ctx):
         conn.poll()
         return handle_notifies()
 
-    if ctx._next_date is not None and ctx._next_date <= datetime.utcnow():
+    if ctx._next_date <= datetime.utcnow():
         return FLUSH_EVENT
 
     return TIMEOUT_EVENT
@@ -455,12 +453,7 @@ def eventloop(ctx):
             flush_pending_jobs(ctx)
 
         elif event.type == ListenEventType.NEW_JOB:
-            if ctx._next_date is None or event.job_time < ctx._next_date:
+            when = (event.job_time - datetime.utcnow()).total_seconds()
+            if event.job_time < ctx._next_date:
                 ctx._next_date = event.job_time
-                log.debug(
-                    'tracking next job in %.3f seconds',
-                    (ctx._next_date - datetime.utcnow()).total_seconds(),
-                )
-
-            else:
-                log.debug('ignoring job=%s, too far into the future', event.job_id)
+                log.debug('tracking next job in %.3f seconds', when)

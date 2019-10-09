@@ -46,7 +46,7 @@ def make_default_model(metadata, JobStates=JobStates):
         id = Column(BigInteger, primary=True)
         start_time = Column(DateTime)
         end_time = Column(DateTime)
-        state = Column(state_enum, nullable=False)
+        state = Column(state_enum, nullable=False, index=True)
 
         created_time = Column(DateTime, nullable=False)
         scheduled_time = Column(DateTime, nullable=False, index=True)
