@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import random
@@ -8,7 +8,6 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
 import threading
-import time
 import traceback
 
 from .util import (
@@ -335,7 +334,8 @@ def set_next_date(ctx):
     if ctx._next_date is not None and ctx._next_date > datetime.utcnow():
         log.debug(
             'tracking next job in %.3f seconds',
-            (ctx._next_date - datetime.utcnow()).total_seconds())
+            (ctx._next_date - datetime.utcnow()).total_seconds(),
+        )
 
 
 def flush_pending_jobs(ctx):
@@ -349,25 +349,26 @@ def flush_pending_jobs(ctx):
         set_next_date(ctx)
 
 
-def apply_jitter(ctx):
-    if not ctx._jitter:
-        return
-
-    timeout = random.uniform(0, ctx._jitter)
-    log.debug('applying jitter=%.3f', timeout)
-    # it's os-dependent using select with 3 empty lists so if no rpipe
-    # then just fallback to time.sleep
-    if ctx._rpipe is not None:
-        select.select([ctx._rpipe], [], [], timeout)
-
-    else:
-        time.sleep(timeout)
-
-    if not ctx._running:
-        raise ExitRequest
+class ListenEventType:
+    CONTINUE = 'continue'
+    FLUSH = 'flush'
+    NEW_JOB = 'new_job'
+    TIMEOUT = 'timeout'
 
 
-class ListenEvent:
+class BoringEvent:
+    def __init__(self, type):
+        self.type = type
+
+
+CONTINUE_EVENT = BoringEvent(ListenEventType.CONTINUE)
+FLUSH_EVENT = BoringEvent(ListenEventType.FLUSH)
+TIMEOUT_EVENT = BoringEvent(ListenEventType.TIMEOUT)
+
+
+class NewJobEvent:
+    type = ListenEventType.NEW_JOB
+
     def __init__(self, *, job_time, job_queue, job_id):
         self.job_id = job_id
         self.job_time = job_time
@@ -404,12 +405,12 @@ def get_next_event(ctx):
                               'payload=%s', queue, payload)
 
             if event is None or job_time < event.job_time:
-                event = ListenEvent(
+                event = NewJobEvent(
                     job_queue=queue,
                     job_id=job_id,
                     job_time=job_time,
                 )
-        return event
+        return event or CONTINUE_EVENT
 
     if conn.notifies:
         return handle_notifies()
@@ -420,24 +421,26 @@ def get_next_event(ctx):
         # add some jitter to the timeout if we are waiting on a future event
         # so that workers are staggered when they wakeup if they are all
         # waiting on the same event
-        timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
-        timeout = clamp(timeout, 0, ctx._timeout)
-
+        timeout = clamp(
+            (ctx._next_date - datetime.utcnow()).total_seconds(),
+            0,
+            ctx._timeout,
+        )
     timeout += random.uniform(0, ctx._jitter)
 
-    log.debug('watching for events with timeout=%s', timeout)
+    log.debug('watching for events with timeout=%.3f', timeout)
     result = select.select(rlist, [], [], timeout)
     if not ctx._running:
         raise ExitRequest
 
     if conn in result[0]:
         conn.poll()
-        event = handle_notifies()
-        if event is not None:
-            # pause briefly so that all workers that just got notified
-            # don't try to poll for jobs at the exact same time
-            apply_jitter(ctx)
-        return event
+        return handle_notifies()
+
+    if ctx._next_date is not None and ctx._next_date <= datetime.utcnow():
+        return FLUSH_EVENT
+
+    return TIMEOUT_EVENT
 
 
 def eventloop(ctx):
@@ -445,24 +448,19 @@ def eventloop(ctx):
     listen_for_events(ctx)
     flush_pending_jobs(ctx)
     while ctx._running:
+        # wait for either _next_date timeout or a new event
         event = get_next_event(ctx)
 
-        # there might be a job to execute if there was a timeout
-        if event is None or event.job_time <= datetime.utcnow():
+        if event.type == ListenEventType.FLUSH:
             flush_pending_jobs(ctx)
 
-            # perform cleanup operations if a timeout occurred
-            if event is None:
-                mark_lost_jobs(ctx)
+        elif event.type == ListenEventType.NEW_JOB:
+            if ctx._next_date is None or event.job_time < ctx._next_date:
+                ctx._next_date = event.job_time
+                log.debug(
+                    'tracking next job in %.3f seconds',
+                    (ctx._next_date - datetime.utcnow()).total_seconds(),
+                )
 
-        # start tracking this job through timeouts
-        elif ctx._next_date is None or event.job_time < ctx._next_date:
-            ctx._next_date = event.job_time
-            log.debug(
-                'tracking job=%s scheduled in %.3f seconds',
-                event.job_id,
-                (ctx._next_date - datetime.utcnow()).total_seconds(),
-            )
-
-        else:
-            log.debug('ignoring job=%s, too far into the future', event.job_id)
+            else:
+                log.debug('ignoring job=%s, too far into the future', event.job_id)
