@@ -33,12 +33,17 @@ pg_locks = table(
 )
 
 
+class ExitRequest(Exception):
+    """ Raised to abort the event loop."""
+
+
 class JobContext:
-    def __init__(self, id, queue, method, args):
+    def __init__(self, id, queue, method, args, cursor=None):
         self.id = id
         self.queue = queue
         self.method = method
         self.args = args
+        self.cursor = cursor
 
     def extend(self, **kw):
         for k, v in kw.items():
@@ -69,7 +74,7 @@ class MQWorker:
 
         self._dbconn = None
         self._rpipe, self._wpipe = None, None
-        self._next_date = None
+        self._next_date = datetime.max
 
     def shutdown_gracefully(self):
         self._running = False
@@ -81,6 +86,9 @@ class MQWorker:
         try:
             with connect_db(self), connect_pipes(self):
                 eventloop(self)
+
+        except ExitRequest:
+            pass
 
         finally:
             self._running = False
@@ -161,13 +169,26 @@ def claim_pending_job(ctx, now=None):
         now = datetime.utcnow()
 
     with dbsession(ctx) as (db, model):
+        running_cursor_sq = (
+            db.query(model.Job.cursor_key)
+            .filter(
+                model.Job.state == model.JobStates.RUNNING,
+                model.Job.cursor_key.isnot(None),
+            )
+            .subquery()
+        )
         job = (
             db.query(model.Job)
-            .with_for_update(skip_locked=True)
+            .outerjoin(
+                running_cursor_sq,
+                running_cursor_sq.c.cursor_key == model.Job.cursor_key,
+            )
+            .with_for_update(of=model.Job, skip_locked=True)
             .filter(
                 model.Job.state == model.JobStates.PENDING,
                 model.Job.queue.in_(ctx._queues.keys()),
                 model.Job.scheduled_time <= now,
+                running_cursor_sq.c.cursor_key.is_(None),
             )
             .order_by(
                 model.Job.scheduled_time.asc(),
@@ -177,6 +198,18 @@ def claim_pending_job(ctx, now=None):
         )
 
         if job is not None:
+            cursor = None
+            if job.cursor_key is not None:
+                cursor = (
+                    db.query(model.JobCursor)
+                    .filter(model.JobCursor.key == job.cursor_key)
+                    .first()
+                )
+                if cursor is not None:
+                    cursor = cursor.properties
+                else:
+                    cursor = {}
+
             job.lock_id = get_lock_id(db, ctx._lock_key, job)
             job.state = model.JobStates.RUNNING
             job.start_time = datetime.utcnow()
@@ -191,6 +224,7 @@ def claim_pending_job(ctx, now=None):
                 queue=job.queue,
                 method=job.method,
                 args=job.args,
+                cursor=cursor,
             )
 
 
@@ -208,13 +242,13 @@ def handle_job(ctx, job):
         log.exception('error while handling job=%s', job.id)
 
     else:
-        finish_job(ctx, job.id, True, result)
+        finish_job(ctx, job.id, True, result, job.cursor)
 
     finally:
         current_thread.name = old_thread_name
 
 
-def finish_job(ctx, job_id, success, result):
+def finish_job(ctx, job_id, success, result, cursor=None):
     with dbsession(ctx) as (db, model):
         state = (
             model.JobStates.COMPLETED
@@ -232,6 +266,26 @@ def finish_job(ctx, job_id, success, result):
         job.result = result
         job.end_time = datetime.utcnow()
         job.lock_id = None
+
+        if job.cursor_key is not None:
+            cursor_obj = (
+                db.query(model.JobCursor)
+                .filter(model.JobCursor.key == job.cursor_key)
+                .with_for_update()
+                .first()
+            )
+            if cursor_obj is None:
+                cursor_obj = model.JobCursor(
+                    key=job.cursor_key,
+                    properties=cursor,
+                )
+                db.add(cursor_obj)
+
+            elif cursor_obj.properties != cursor:
+                cursor_obj.properties = cursor or {}
+
+        elif cursor is not None:
+            log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
 
@@ -277,10 +331,15 @@ def set_next_date(ctx):
             .limit(1)
             .scalar()
         )
-    if ctx._next_date is not None and ctx._next_date > datetime.utcnow():
-        log.debug(
-            'tracking next job in %.3f seconds',
-            (ctx._next_date - datetime.utcnow()).total_seconds())
+
+    if ctx._next_date is None:
+        log.debug('no pending jobs')
+        ctx._next_date = datetime.max
+
+    else:
+        when = (ctx._next_date - datetime.utcnow()).total_seconds()
+        if when > 0:
+            log.debug('tracking next job in %.3f seconds', when)
 
 
 def flush_pending_jobs(ctx):
@@ -290,11 +349,30 @@ def flush_pending_jobs(ctx):
             break
         handle_job(ctx, job)
 
-    if ctx._next_date is not None and ctx._next_date < datetime.utcnow():
-        ctx._next_date = None
+    if ctx._running:
+        set_next_date(ctx)
 
 
-class ListenEvent:
+class ListenEventType:
+    CONTINUE = 'continue'
+    FLUSH = 'flush'
+    NEW_JOB = 'new_job'
+    TIMEOUT = 'timeout'
+
+
+class BoringEvent:
+    def __init__(self, type):
+        self.type = type
+
+
+CONTINUE_EVENT = BoringEvent(ListenEventType.CONTINUE)
+FLUSH_EVENT = BoringEvent(ListenEventType.FLUSH)
+TIMEOUT_EVENT = BoringEvent(ListenEventType.TIMEOUT)
+
+
+class NewJobEvent:
+    type = ListenEventType.NEW_JOB
+
     def __init__(self, *, job_time, job_queue, job_id):
         self.job_id = job_id
         self.job_time = job_time
@@ -331,65 +409,51 @@ def get_next_event(ctx):
                               'payload=%s', queue, payload)
 
             if event is None or job_time < event.job_time:
-                event = ListenEvent(
+                event = NewJobEvent(
                     job_queue=queue,
                     job_id=job_id,
                     job_time=job_time,
                 )
-        return event
+        return event or CONTINUE_EVENT
 
     if conn.notifies:
         return handle_notifies()
 
-    if ctx._next_date is None:
-        timeout = ctx._timeout
-    else:
-        # never a negative timeout
-        timeout = clamp(
-            (ctx._next_date - datetime.utcnow()).total_seconds(),
-            0, ctx._timeout,
-        )
+    # add some jitter to the timeout if we are waiting on a future event
+    # so that workers are staggered when they wakeup if they are all
+    # waiting on the same event
+    timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
+    timeout = clamp(timeout, 0, ctx._timeout)
     timeout += random.uniform(0, ctx._jitter)
 
-    log.debug('watching for events with timeout=%s', timeout)
+    log.debug('watching for events with timeout=%.3f', timeout)
     result = select.select(rlist, [], [], timeout)
-    if result == ([], [], []):
-        log.debug('timeout, no events detected')
-        return None
+    if not ctx._running:
+        raise ExitRequest
 
-    elif ctx._rpipe in result[0]:
-        return ctx._rpipe
-
-    else:
+    if conn in result[0]:
         conn.poll()
         return handle_notifies()
+
+    if ctx._next_date <= datetime.utcnow():
+        return FLUSH_EVENT
+
+    return TIMEOUT_EVENT
 
 
 def eventloop(ctx):
     mark_lost_jobs(ctx)
     listen_for_events(ctx)
     flush_pending_jobs(ctx)
-    set_next_date(ctx)
     while ctx._running:
+        # wait for either _next_date timeout or a new event
         event = get_next_event(ctx)
-        if event is ctx._rpipe:
-            continue
 
-        # there might be a job to execute if there was a timeout
-        if event is None or event.job_time <= datetime.utcnow():
+        if event.type == ListenEventType.FLUSH:
             flush_pending_jobs(ctx)
 
-            # perform cleanup operations if a timeout occurs
-            if event is None:
-                mark_lost_jobs(ctx)
-
-        # start tracking this job through timeouts
-        elif ctx._next_date is None or event.job_time < ctx._next_date:
-            ctx._next_date = event.job_time
-            log.debug('tracking new job=%s scheduled in %.3f seconds',
-                      event.job_id,
-                      (ctx._next_date - datetime.utcnow()).total_seconds())
-
-        else:
-            log.debug('ignoring job=%s, too far into the future',
-                      event.job_id)
+        elif event.type == ListenEventType.NEW_JOB:
+            when = (event.job_time - datetime.utcnow()).total_seconds()
+            if event.job_time < ctx._next_date:
+                ctx._next_date = event.job_time
+                log.debug('tracking next job in %.3f seconds', when)

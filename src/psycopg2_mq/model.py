@@ -1,7 +1,7 @@
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as pg
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.schema import Column, CheckConstraint
+from sqlalchemy.schema import Column, CheckConstraint, Index
 from sqlalchemy.types import (
     BigInteger,
     DateTime,
@@ -12,9 +12,10 @@ from sqlalchemy.types import (
 
 
 class Model:
-    def __init__(self, Job, JobStates):
+    def __init__(self, Job, JobStates, JobCursor):
         self.Job = Job
         self.JobStates = JobStates
+        self.JobCursor = JobCursor
 
 
 class JobStates:
@@ -42,18 +43,20 @@ def make_default_model(metadata, JobStates=JobStates):
     class Job(Base):
         __table_name__ = 'mq_job'
 
-        id = Column(BigInteger)
+        id = Column(BigInteger, primary=True)
         start_time = Column(DateTime)
         end_time = Column(DateTime)
         state = Column(state_enum, nullable=False, index=True)
 
-        created_time = Column(DateTime, nullable=False, index=True)
+        created_time = Column(DateTime, nullable=False)
         scheduled_time = Column(DateTime, nullable=False, index=True)
 
         queue = Column(Text, nullable=False, index=True)
         method = Column(Text, nullable=False)
         args = Column(pg.JSONB, nullable=False)
         result = Column(pg.JSONB)
+
+        cursor_key = Column(Text)
 
         lock_id = Column(Integer, nullable=True, unique=True)
 
@@ -65,6 +68,18 @@ def make_default_model(metadata, JobStates=JobStates):
                 ),
                 name='ck_mq_job_lock_id',
             ),
+            Index(
+                'uq_mq_job_pending_cursor_key',
+                cursor_key,
+                postgresql_where=state == JobStates.PENDING,
+                unique=True,
+            ),
+            Index(
+                'uq_mq_job_running_cursor_key',
+                cursor_key,
+                postgresql_where=state == JobStates.RUNNING,
+                unique=True,
+            ),
         )
 
         def __repr__(self):
@@ -74,8 +89,18 @@ def make_default_model(metadata, JobStates=JobStates):
                 'state="{0.state}", '
                 'scheduled_time={0.scheduled_time}, '
                 'queue="{0.queue}", '
-                'method="{0.method}"'
+                'method="{0.method}", '
+                'cursor_key="{0.cursor_key}"'
                 ')'
             ).format(self)
 
-    return Model(Job, JobStates)
+    class JobCursor(Base):
+        __table_name__ = 'mq_job_cursor'
+
+        key = Column(Text, primary=True)
+        properties = Column(pg.JSONB, default=dict, nullable=False)
+
+        def __repr__(self):
+            return '<JobCursor(key="{0.key}")>'.format(self)
+
+    return Model(Job, JobStates, JobCursor)
