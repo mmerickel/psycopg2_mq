@@ -1,3 +1,9 @@
+0.3 (2019-10-15)
+================
+
+- Add a new column ``cursor_snapshot`` to the ``Job`` model which will
+  contain the value of the cursor when the job begins.
+
 0.2 (2019-10-09)
 ================
 
