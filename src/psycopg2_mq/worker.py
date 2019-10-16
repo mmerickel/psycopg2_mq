@@ -210,6 +210,11 @@ def claim_pending_job(ctx, now=None):
                 else:
                     cursor = {}
 
+                # since we commit before returning the context, it's safe to
+                # not make a deep copy here because we know the job won't run
+                # and mutate the content until after the snapshot is committed
+                job.cursor_snapshot = cursor
+
             job.lock_id = get_lock_id(db, ctx._lock_key, job)
             job.state = model.JobStates.RUNNING
             job.start_time = datetime.utcnow()
