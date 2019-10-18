@@ -1,3 +1,15 @@
+unreleased
+==========
+
+- When attempting to schedule a job with a cursor and a ``scheduled_time``
+  earlier than a pending job on the same cursor, the job will be updated to
+  run at the earlier time.
+
+- When attempting to schedule a job with a cursor and a pending job already
+  exists on the same cursor, a ``conflict_resolver`` function may be
+  supplied to ``MQSource.call`` to update the job properties, merging the
+  arguments however the user wishes.
+
 0.3 (2019-10-15)
 ================
 

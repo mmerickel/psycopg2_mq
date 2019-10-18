@@ -32,6 +32,7 @@ class MQSource:
         now=None,
         cursor_key=None,
         job_kwargs=None,
+        conflict_resolver=None,
     ):
         if now is None:
             now = datetime.utcnow()
@@ -46,13 +47,13 @@ class MQSource:
         JobStates = self.model.JobStates
 
         job_id = None
-        job_is_new = False
+        notify = False
         # there is a race condition here in READ COMMITTED mode where
         # a job could start between the insert and the query, so if we
         # do not get a locked job record here we will loop until we either
         # insert a new row or get a locked one
-        while job_id is None:
-            result = self.dbsession.execute(
+        while True:
+            job_id = self.dbsession.execute(
                 insert(Job.__table__)
                 .values(
                     queue=queue,
@@ -69,42 +70,50 @@ class MQSource:
                     index_where=(Job.state == JobStates.PENDING),
                 )
                 .returning(Job.id)
-            )
-            job_id, = next(result, (None,))
-
-            # we just inserted a new job, notify workers
+            ).scalar()
             if job_id is not None:
-                job_is_new = True
+                log.info('scheduled new job=%s on queue=%s, method=%s',
+                         job_id, queue, method)
+                notify = True
                 break
 
-            # a job already exists, so let's find it and return the id
-            # we lock the job in the pending state to ensure that it doesn't
-            # start until our transaction completes with data that should be
-            # used in the worker
-            job_id = (
-                self.dbsession.query(Job.id)
+            # a job already exists, load it and resolve conflicts
+            # XXX this will only occur on jobs with a cursor
+            job = (
+                self.dbsession.query(Job)
                 .with_for_update()
                 .filter(
                     Job.state == JobStates.PENDING,
                     Job.cursor_key == cursor_key,
                 )
-                .scalar()
+                .first()
             )
+            if job is not None:
+                job_id = job.id
+                log.info('joining existing job=%s', job_id)
 
-        if job_is_new:
+                # the earlier scheduled_time should always win
+                if when < job.scheduled_time:
+                    job.scheduled_time = when
+                    notify = True
+
+                # invoke a callable to update properties on the job
+                if conflict_resolver is not None:
+                    conflict_resolver(job)
+
+                break
+
+        if notify:
             epoch_seconds = datetime_to_int(when)
             payload = json.dumps({'j': job_id, 't': epoch_seconds})
             self.dbsession.execute(sa.select([
                 sa.func.pg_notify(queue, payload),
             ]))
+            # XXX notify is always true when the raw insert works above so we
+            # handle the two scenarios (notify and raw insert) in which
+            # mark_changed needs to be called with only a single call
             if self.transaction_manager:
                 mark_changed(self.dbsession)
-
-            log.info('enqueuing job=%s on queue=%s, method=%s',
-                     job_id, queue, method)
-
-        else:
-            log.debug('joining existing job=%s', job_id)
 
         return job_id
 
