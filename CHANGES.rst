@@ -1,5 +1,5 @@
-unreleased
-==========
+0.3.1 (2019-10-17)
+==================
 
 - When attempting to schedule a job with a cursor and a ``scheduled_time``
   earlier than a pending job on the same cursor, the job will be updated to
