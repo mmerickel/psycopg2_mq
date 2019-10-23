@@ -462,3 +462,7 @@ def eventloop(ctx):
             if event.job_time < ctx._next_date:
                 ctx._next_date = event.job_time
                 log.debug('tracking next job in %.3f seconds', when)
+
+        elif event.type == ListenEventType.TIMEOUT:
+            mark_lost_jobs(ctx)
+            set_next_date(ctx)

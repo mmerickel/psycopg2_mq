@@ -1,3 +1,9 @@
+0.3.2 (2019-10-22)
+==================
+
+- Mark lost jobs during timeouts instead of just when a worker starts in order
+  to catch them earlier.
+
 0.3.1 (2019-10-17)
 ==================
 
