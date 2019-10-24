@@ -1,3 +1,8 @@
+0.3.3 (2019-10-23)
+==================
+
+- Only save a cursor update if the job is completed successfully.
+
 0.3.2 (2019-10-22)
 ==================
 
