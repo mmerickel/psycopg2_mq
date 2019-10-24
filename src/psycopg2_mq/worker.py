@@ -272,27 +272,34 @@ def finish_job(ctx, job_id, success, result, cursor=None):
         job.end_time = datetime.utcnow()
         job.lock_id = None
 
-        if job.cursor_key is not None:
-            cursor_obj = (
-                db.query(model.JobCursor)
-                .filter(model.JobCursor.key == job.cursor_key)
-                .with_for_update()
-                .first()
-            )
-            if cursor_obj is None:
-                cursor_obj = model.JobCursor(
-                    key=job.cursor_key,
-                    properties=cursor,
-                )
-                db.add(cursor_obj)
+        if success:
+            if job.cursor_key is not None:
+                save_cursor(db, model, job, cursor)
 
-            elif cursor_obj.properties != cursor:
-                cursor_obj.properties = cursor or {}
-
-        elif cursor is not None:
-            log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
+            elif cursor is not None:
+                log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
+
+
+def save_cursor(db, model, job, cursor):
+    if cursor is None:
+        cursor = {}
+    cursor_obj = (
+        db.query(model.JobCursor)
+        .filter(model.JobCursor.key == job.cursor_key)
+        .with_for_update()
+        .first()
+    )
+    if cursor_obj is None:
+        cursor_obj = model.JobCursor(
+            key=job.cursor_key,
+            properties=cursor,
+        )
+        db.add(cursor_obj)
+
+    elif cursor_obj.properties != cursor:
+        cursor_obj.properties = cursor
 
 
 def find_dangling_jobs(db, model, lock_key):
