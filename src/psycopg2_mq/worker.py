@@ -1,3 +1,4 @@
+from concurrent import futures
 from contextlib import contextmanager
 from datetime import datetime
 import json
@@ -62,6 +63,7 @@ class MQWorker:
         timeout=DEFAULT_TIMEOUT,
         jitter=DEFAULT_JITTER,
         lock_key=DEFAULT_LOCK_KEY,
+        threads=1,
     ):
         self._engine = engine
         self._queues = queues
@@ -70,26 +72,30 @@ class MQWorker:
         self._timeout = timeout
         self._jitter = jitter
         self._lock_key = lock_key
+        self._threads = threads
 
         self._running = False
 
         self._dbconn = None
-        self._rpipe, self._wpipe = None, None
+        self._shutdown_rpipe = self._shutdown_wpipe = None
+        self._job_rpipe = self._job_wpipe = None
         self._next_date = datetime.max
+        self._pool = None
+        self._active_jobs = {}
 
     def shutdown_gracefully(self):
         self._running = False
-        if self._wpipe:
-            os.write(self._wpipe, b'1')
+        if self._shutdown_wpipe:
+            os.write(self._shutdown_wpipe, b'1')
 
     def run(self):
         self._running = True
         try:
-            with connect_db(self), connect_pipes(self):
-                eventloop(self)
-
-        except ExitRequest:
-            pass
+            with connect_db(self):
+                with connect_pool(self):
+                    with connect_job_pipes(self):
+                        with connect_shutdown_pipes(self):
+                            eventloop(self)
 
         finally:
             self._running = False
@@ -121,23 +127,54 @@ def connect_db(ctx):
 
 
 @contextmanager
-def connect_pipes(ctx):
-    ctx._rpipe, ctx._wpipe = os.pipe()
+def connect_shutdown_pipes(ctx):
+    ctx._shutdown_rpipe, ctx._shutdown_wpipe = os.pipe()
     try:
         yield
 
     finally:
         try:
-            os.close(ctx._rpipe)
+            os.close(ctx._shutdown_rpipe)
         except Exception:  # pragma: no cover
             pass
 
         try:
-            os.close(ctx._wpipe)
+            os.close(ctx._shutdown_wpipe)
         except Exception:  # pragma: no cover
             pass
 
-        ctx._rpipe, ctx._wpipe = None, None
+        ctx._shutdown_rpipe = ctx._shutdown_wpipe = None
+
+
+@contextmanager
+def connect_job_pipes(ctx):
+    ctx._job_rpipe, ctx._job_wpipe = os.pipe()
+    try:
+        yield
+
+    finally:
+        try:
+            os.close(ctx._job_rpipe)
+        except Exception:  # pragma: no cover
+            pass
+
+        try:
+            os.close(ctx._job_wpipe)
+        except Exception:  # pragma: no cover
+            pass
+
+        ctx._job_rpipe = ctx._job_wpipe = None
+
+
+@contextmanager
+def connect_pool(ctx):
+    pool = futures.ThreadPoolExecutor(ctx._threads)
+    ctx._pool = pool
+    try:
+        with pool:
+            yield
+    finally:
+        ctx._pool = None
 
 
 @contextmanager
@@ -234,21 +271,16 @@ def claim_pending_job(ctx, now=None):
             )
 
 
-def handle_job(ctx, job):
+def execute_job(queue, job):
     current_thread = threading.current_thread()
     old_thread_name = current_thread.name
     try:
         current_thread.name = f'{old_thread_name},job={job.id}'
-        queue = ctx._queues[job.queue]
-        result = queue.execute_job(job)
+        return queue.execute_job(job)
 
-    # BaseException to catch KeyboardInterrupt
-    except BaseException as ex:
-        finish_job(ctx, job.id, False, ctx.result_from_error(ex))
+    except BaseException:
         log.exception('error while handling job=%s', job.id)
-
-    else:
-        finish_job(ctx, job.id, True, result, job.cursor)
+        raise
 
     finally:
         current_thread.name = old_thread_name
@@ -355,20 +387,45 @@ def set_next_date(ctx):
             log.debug('tracking next job in %.3f seconds', when)
 
 
-def flush_pending_jobs(ctx):
-    while ctx._running:
+def enqueue_jobs(ctx):
+    while ctx._running and len(ctx._active_jobs) < ctx._threads:
         job = claim_pending_job(ctx)
         if job is None:
             break
-        handle_job(ctx, job)
+        queue = ctx._queues[job.queue]
+        future = ctx._pool.submit(execute_job, queue, job)
+        ctx._active_jobs[future] = job
+        future.add_done_callback(lambda f: notify_job_done(ctx, job))
 
     if ctx._running:
         set_next_date(ctx)
 
 
+def notify_job_done(ctx, job):
+    try:
+        os.write(ctx._job_wpipe, b'1')
+
+    except BaseException:
+        log.exception('caught unhandled error when notifying of job completion')
+
+
+def cleanup_finished_jobs(ctx):
+    done, _ = futures.wait(list(ctx._active_jobs.keys()), 0)
+    for future in done:
+        job = ctx._active_jobs.pop(future)
+        error = future.exception()
+        if error is not None:
+            finish_job(ctx, job.id, False, ctx.result_from_error(error))
+
+        else:
+            result = future.result()
+            finish_job(ctx, job.id, True, result, job.cursor)
+
+
 class ListenEventType:
     CONTINUE = 'continue'
-    FLUSH = 'flush'
+    JOB_READY = 'job_ready'
+    JOB_DONE = 'job_done'
     NEW_JOB = 'new_job'
     TIMEOUT = 'timeout'
 
@@ -379,7 +436,8 @@ class BoringEvent:
 
 
 CONTINUE_EVENT = BoringEvent(ListenEventType.CONTINUE)
-FLUSH_EVENT = BoringEvent(ListenEventType.FLUSH)
+JOB_READY_EVENT = BoringEvent(ListenEventType.JOB_READY)
+JOB_DONE_EVENT = BoringEvent(ListenEventType.JOB_DONE)
 TIMEOUT_EVENT = BoringEvent(ListenEventType.TIMEOUT)
 
 
@@ -402,9 +460,11 @@ def listen_for_events(ctx):
 def get_next_event(ctx):
     conn = ctx._dbconn.connection
 
-    rlist = [conn]
-    if ctx._rpipe is not None:
-        rlist.append(ctx._rpipe)
+    rlist = [ctx._job_rpipe]
+    if ctx._running:
+        rlist.append(conn)
+        if ctx._shutdown_rpipe is not None:
+            rlist.append(ctx._shutdown_rpipe)
 
     def handle_notifies():
         event = None
@@ -432,24 +492,39 @@ def get_next_event(ctx):
     if conn.notifies:
         return handle_notifies()
 
+    # if not saturated then reduce the timeout to the next job start time
+    if ctx._running and len(ctx._active_jobs) < ctx._threads:
+        timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
+    else:
+        timeout = ctx._timeout
+
     # add some jitter to the timeout if we are waiting on a future event
     # so that workers are staggered when they wakeup if they are all
     # waiting on the same event
-    timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
     timeout = clamp(timeout, 0, ctx._timeout)
     timeout += random.uniform(0, ctx._jitter)
 
     log.debug('watching for events with timeout=%.3f', timeout)
-    result = select.select(rlist, [], [], timeout)
-    if not ctx._running:
-        raise ExitRequest
+    result, *_ = select.select(rlist, [], [], timeout)
 
-    if conn in result[0]:
+    if ctx._shutdown_rpipe in result:
+        log.info(
+            'received shutdown signal with %d active jobs',
+            len(ctx._active_jobs),
+        )
+        os.read(ctx._shutdown_rpipe, 8)
+        return CONTINUE_EVENT
+
+    if ctx._job_rpipe in result:
+        os.read(ctx._job_rpipe, 8)
+        return JOB_DONE_EVENT
+
+    if conn in result:
         conn.poll()
         return handle_notifies()
 
     if ctx._next_date <= datetime.utcnow():
-        return FLUSH_EVENT
+        return JOB_READY_EVENT
 
     return TIMEOUT_EVENT
 
@@ -457,13 +532,16 @@ def get_next_event(ctx):
 def eventloop(ctx):
     mark_lost_jobs(ctx)
     listen_for_events(ctx)
-    flush_pending_jobs(ctx)
-    while ctx._running:
+    enqueue_jobs(ctx)
+    while ctx._running or ctx._active_jobs:
         # wait for either _next_date timeout or a new event
         event = get_next_event(ctx)
 
-        if event.type == ListenEventType.FLUSH:
-            flush_pending_jobs(ctx)
+        if event.type == ListenEventType.JOB_READY:
+            enqueue_jobs(ctx)
+
+        elif event.type == ListenEventType.JOB_DONE:
+            cleanup_finished_jobs(ctx)
 
         elif event.type == ListenEventType.NEW_JOB:
             if event.job_time < ctx._next_date:
