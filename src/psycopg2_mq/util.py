@@ -1,3 +1,4 @@
+import builtins
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 
@@ -14,6 +15,14 @@ def int_to_datetime(value):
 
 def clamp(v, lo, hi):
     return min(max(v, lo), hi)
+
+
+def class_name(cls):
+    name = cls.__qualname__
+    module = cls.__module__
+    if module is not None and module != builtins.__name__:
+        name = module + '.' + name
+    return name
 
 
 # cribbed from sentry_sdk

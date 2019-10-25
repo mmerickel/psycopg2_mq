@@ -12,6 +12,7 @@ import traceback
 
 from .util import (
     clamp,
+    class_name,
     int_to_datetime,
     safe_object,
 )
@@ -95,7 +96,7 @@ class MQWorker:
 
     def result_from_error(self, ex):
         return {
-            'exc': ex.__class__.__qualname__,
+            'exc': class_name(ex.__class__),
             'args': safe_object(ex.args),
             'tb': traceback.format_tb(ex.__traceback__),
         }
@@ -465,9 +466,9 @@ def eventloop(ctx):
             flush_pending_jobs(ctx)
 
         elif event.type == ListenEventType.NEW_JOB:
-            when = (event.job_time - datetime.utcnow()).total_seconds()
             if event.job_time < ctx._next_date:
                 ctx._next_date = event.job_time
+                when = (event.job_time - datetime.utcnow()).total_seconds()
                 log.debug('tracking next job in %.3f seconds', when)
 
         elif event.type == ListenEventType.TIMEOUT:
