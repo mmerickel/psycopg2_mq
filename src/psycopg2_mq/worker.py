@@ -365,13 +365,11 @@ def mark_lost_jobs(ctx):
 def set_next_date(ctx):
     with dbsession(ctx) as (db, model):
         ctx._next_date = (
-            db.query(model.Job.scheduled_time)
+            db.query(sa.func.min(model.Job.scheduled_time))
             .filter(
                 model.Job.state == model.JobStates.PENDING,
                 model.Job.queue.in_(ctx._queues.keys()),
             )
-            .order_by(model.Job.scheduled_time.asc())
-            .limit(1)
             .scalar()
         )
 
