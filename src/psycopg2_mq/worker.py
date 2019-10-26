@@ -2,7 +2,6 @@ from concurrent import futures
 from contextlib import contextmanager
 from datetime import datetime
 import json
-import os
 import random
 import select
 import sqlalchemy as sa
@@ -11,6 +10,7 @@ from sqlalchemy.sql import table, column
 import threading
 import traceback
 
+from .trigger import Trigger
 from .util import (
     clamp,
     class_name,
@@ -77,25 +77,26 @@ class MQWorker:
         self._running = False
 
         self._dbconn = None
-        self._shutdown_rpipe = self._shutdown_wpipe = None
-        self._job_rpipe = self._job_wpipe = None
+        self._shutdown_trigger = None
+        self._job_trigger = None
         self._next_date = datetime.max
         self._pool = None
         self._active_jobs = {}
 
     def shutdown_gracefully(self):
-        self._running = False
-        if self._shutdown_wpipe:
-            os.write(self._shutdown_wpipe, b'1')
+        if self._shutdown_trigger:
+            self._shutdown_trigger.notify()
 
     def run(self):
         self._running = True
         try:
-            with connect_db(self):
-                with connect_pool(self):
-                    with connect_job_pipes(self):
-                        with connect_shutdown_pipes(self):
-                            eventloop(self)
+            with connect_pool(self):
+                with connect_job_trigger(self):
+                    with connect_shutdown_trigger(self):
+                        @db_retry
+                        def _():
+                            with connect_db(self):
+                                eventloop(self)
 
         finally:
             self._running = False
@@ -110,6 +111,20 @@ class MQWorker:
 
 def engine_from_sessionmaker(maker):
     return maker.kw['bind']
+
+
+def db_retry(fn):
+    while True:
+        try:
+            return fn()
+
+        except sa.exc.DBAPIError as ex:
+            if ex.connection_invalidated:
+                log.exception(
+                    'mq database connection remotely killed, reconnecting',
+                )
+                continue
+            raise
 
 
 @contextmanager
@@ -127,43 +142,25 @@ def connect_db(ctx):
 
 
 @contextmanager
-def connect_shutdown_pipes(ctx):
-    ctx._shutdown_rpipe, ctx._shutdown_wpipe = os.pipe()
+def connect_shutdown_trigger(ctx):
+    ctx._shutdown_trigger = Trigger()
     try:
         yield
 
     finally:
-        try:
-            os.close(ctx._shutdown_rpipe)
-        except Exception:  # pragma: no cover
-            pass
-
-        try:
-            os.close(ctx._shutdown_wpipe)
-        except Exception:  # pragma: no cover
-            pass
-
-        ctx._shutdown_rpipe = ctx._shutdown_wpipe = None
+        ctx._shutdown_trigger.close()
+        ctx._shutdown_trigger = None
 
 
 @contextmanager
-def connect_job_pipes(ctx):
-    ctx._job_rpipe, ctx._job_wpipe = os.pipe()
+def connect_job_trigger(ctx):
+    ctx._job_trigger = Trigger()
     try:
         yield
 
     finally:
-        try:
-            os.close(ctx._job_rpipe)
-        except Exception:  # pragma: no cover
-            pass
-
-        try:
-            os.close(ctx._job_wpipe)
-        except Exception:  # pragma: no cover
-            pass
-
-        ctx._job_rpipe = ctx._job_wpipe = None
+        ctx._job_trigger.close()
+        ctx._job_trigger = None
 
 
 @contextmanager
@@ -293,11 +290,11 @@ def finish_job(ctx, job_id, success, result, cursor=None):
             if success
             else model.JobStates.FAILED
         )
-        job = db.query(model.Job).get(job_id)
-
-        db.execute(
-            'select pg_advisory_unlock(:key, :id)',
-            {'key': ctx._lock_key, 'id': job.lock_id},
+        job = (
+            db.query(model.Job)
+            .with_for_update()
+            .filter_by(id=job_id)
+            .one()
         )
 
         job.state = state
@@ -311,6 +308,12 @@ def finish_job(ctx, job_id, success, result, cursor=None):
 
             elif cursor is not None:
                 log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
+
+        db.flush()
+        db.execute(
+            'select pg_advisory_unlock(:key, :id)',
+            {'key': ctx._lock_key, 'id': job.lock_id},
+        )
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
 
@@ -335,27 +338,22 @@ def save_cursor(db, model, job, cursor):
         cursor_obj.properties = cursor
 
 
-def find_dangling_jobs(db, model, lock_key):
-    return (
-        db.query(model.Job)
-        .outerjoin(pg_locks, sa.and_(
-            pg_locks.c.locktype == 'advisory',
-            pg_locks.c.classid == lock_key,
-            pg_locks.c.objid == model.Job.lock_id,
-        ))
-        .filter(
-            model.Job.state == model.JobStates.RUNNING,
-            model.Job.lock_id != sa.null(),
-            pg_locks.c.objid == sa.null(),
-        )
-    )
-
-
 def mark_lost_jobs(ctx):
     with dbsession(ctx) as (db, model):
         job_q = (
-            find_dangling_jobs(db, model, ctx._lock_key)
+            db.query(model.Job)
             .with_for_update(of=model.Job)
+            .outerjoin(pg_locks, sa.and_(
+                pg_locks.c.locktype == 'advisory',
+                pg_locks.c.classid == ctx._lock_key,
+                pg_locks.c.objid == model.Job.lock_id,
+            ))
+            .filter(
+                model.Job.state == model.JobStates.RUNNING,
+                model.Job.queue.in_(ctx._queues.keys()),
+                model.Job.lock_id != sa.null(),
+                pg_locks.c.objid == sa.null(),
+            )
             .order_by(model.Job.start_time.asc())
         )
         for job in job_q:
@@ -395,21 +393,13 @@ def enqueue_jobs(ctx):
         queue = ctx._queues[job.queue]
         future = ctx._pool.submit(execute_job, queue, job)
         ctx._active_jobs[future] = job
-        future.add_done_callback(lambda f: notify_job_done(ctx, job))
+        future.add_done_callback(lambda f: ctx._job_trigger.notify())
 
     if ctx._running:
         set_next_date(ctx)
 
 
-def notify_job_done(ctx, job):
-    try:
-        os.write(ctx._job_wpipe, b'1')
-
-    except BaseException:
-        log.exception('caught unhandled error when notifying of job completion')
-
-
-def cleanup_finished_jobs(ctx):
+def finish_jobs(ctx):
     done, _ = futures.wait(list(ctx._active_jobs.keys()), 0)
     for future in done:
         job = ctx._active_jobs.pop(future)
@@ -428,6 +418,7 @@ class ListenEventType:
     JOB_DONE = 'job_done'
     NEW_JOB = 'new_job'
     TIMEOUT = 'timeout'
+    SHUTDOWN = 'shutdown'
 
 
 class BoringEvent:
@@ -439,6 +430,7 @@ CONTINUE_EVENT = BoringEvent(ListenEventType.CONTINUE)
 JOB_READY_EVENT = BoringEvent(ListenEventType.JOB_READY)
 JOB_DONE_EVENT = BoringEvent(ListenEventType.JOB_DONE)
 TIMEOUT_EVENT = BoringEvent(ListenEventType.TIMEOUT)
+SHUTDOWN_EVENT = BoringEvent(ListenEventType.SHUTDOWN)
 
 
 class NewJobEvent:
@@ -460,11 +452,11 @@ def listen_for_events(ctx):
 def get_next_event(ctx):
     conn = ctx._dbconn.connection
 
-    rlist = [ctx._job_rpipe]
+    rlist = [ctx._job_trigger]
     if ctx._running:
         rlist.append(conn)
-        if ctx._shutdown_rpipe is not None:
-            rlist.append(ctx._shutdown_rpipe)
+        if ctx._shutdown_trigger is not None:
+            rlist.append(ctx._shutdown_trigger)
 
     def handle_notifies():
         event = None
@@ -507,17 +499,17 @@ def get_next_event(ctx):
     log.debug('watching for events with timeout=%.3f', timeout)
     result, *_ = select.select(rlist, [], [], timeout)
 
-    if ctx._shutdown_rpipe in result:
+    if ctx._job_trigger in result:
+        ctx._job_trigger.read()
+        return JOB_DONE_EVENT
+
+    if ctx._shutdown_trigger in result:
         log.info(
             'received shutdown signal with %d active jobs',
             len(ctx._active_jobs),
         )
-        os.read(ctx._shutdown_rpipe, 8)
-        return CONTINUE_EVENT
-
-    if ctx._job_rpipe in result:
-        os.read(ctx._job_rpipe, 8)
-        return JOB_DONE_EVENT
+        ctx._shutdown_trigger.read()
+        return SHUTDOWN_EVENT
 
     if conn in result:
         conn.poll()
@@ -537,11 +529,14 @@ def eventloop(ctx):
         # wait for either _next_date timeout or a new event
         event = get_next_event(ctx)
 
+        if event.type == ListenEventType.SHUTDOWN:
+            ctx._running = False
+
         if event.type == ListenEventType.JOB_READY:
             enqueue_jobs(ctx)
 
         elif event.type == ListenEventType.JOB_DONE:
-            cleanup_finished_jobs(ctx)
+            finish_jobs(ctx)
 
         elif event.type == ListenEventType.NEW_JOB:
             if event.job_time < ctx._next_date:
