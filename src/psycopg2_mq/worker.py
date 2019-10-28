@@ -2,6 +2,8 @@ from concurrent import futures
 from contextlib import contextmanager
 from datetime import datetime
 import json
+import os
+import platform
 import random
 import select
 import signal
@@ -66,6 +68,7 @@ class MQWorker:
         lock_key=DEFAULT_LOCK_KEY,
         threads=1,
         capture_signals=True,
+        name=None,
     ):
         self._engine = engine
         self._queues = queues
@@ -76,6 +79,10 @@ class MQWorker:
         self._lock_key = lock_key
         self._threads = threads
         self._capture_signals = capture_signals
+
+        if name is None:
+            name = guess_worker_name()
+        self._name = name
 
         self._running = False
 
@@ -114,6 +121,12 @@ class MQWorker:
 
 def engine_from_sessionmaker(maker):
     return maker.kw['bind']
+
+
+def guess_worker_name():
+    hostname = platform.node()
+    pid = os.getpid()
+    return f'{hostname}.{pid}'
 
 
 @contextmanager
@@ -273,6 +286,7 @@ def claim_pending_job(ctx, now=None):
             job.lock_id = get_lock_id(db, ctx._lock_key, job)
             job.state = model.JobStates.RUNNING
             job.start_time = datetime.utcnow()
+            job.worker = ctx._name
 
             log.info(
                 'beginning job=%s %.3fs after scheduled start',

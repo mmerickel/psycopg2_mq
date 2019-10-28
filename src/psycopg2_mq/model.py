@@ -60,6 +60,7 @@ def make_default_model(metadata, JobStates=JobStates):
         cursor_snapshot = Column(pg.JSONB)
 
         lock_id = Column(Integer, unique=True)
+        worker = Column(Text)
 
         __table_args__ = (
             CheckConstraint(
