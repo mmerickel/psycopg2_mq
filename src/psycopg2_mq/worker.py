@@ -10,6 +10,7 @@ import signal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
+import sys
 import threading
 import traceback
 
@@ -101,6 +102,7 @@ class MQWorker:
     def run(self):
         self._running = True
         try:
+            log.info(f'starting mq worker={self._name}')
             with maybe_capture_signals(self):
                 with connect_pool(self):
                     with connect_job_trigger(self):
@@ -116,6 +118,23 @@ class MQWorker:
             'exc': class_name(ex.__class__),
             'args': safe_object(ex.args),
             'tb': traceback.format_tb(ex.__traceback__),
+        }
+
+    def get_status(self):
+        return {
+            'name': self._name,
+            'running': self._running,
+            'total_threads': self._threads,
+            'idle_threads': self._threads - len(self._active_jobs),
+            'active_jobs': [
+                {
+                    'id': j.id,
+                    'queue': j.queue,
+                    'method': j.method,
+                    'args': j.args,
+                }
+                for j in self._active_jobs.values()
+            ],
         }
 
 
@@ -147,12 +166,18 @@ def maybe_capture_signals(ctx):
         log.info('received Ctrl-C, waiting for workers to complete')
         ctx.shutdown_gracefully()
 
+    def onsigusr1(*args):
+        status = ctx.get_status()
+        print(json.dumps(status, sort_keys=True, indent=2), file=sys.stderr)
+
     signal.signal(signal.SIGTERM, onsigterm)
     signal.signal(signal.SIGINT, onsigint)
+    signal.signal(signal.SIGUSR1, onsigusr1)
     try:
         yield
 
     finally:
+        signal.signal(signal.SIGUSR1, signal.SIG_DFL)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
