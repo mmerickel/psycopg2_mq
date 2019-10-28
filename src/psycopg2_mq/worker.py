@@ -1,15 +1,17 @@
+from concurrent import futures
 from contextlib import contextmanager
 from datetime import datetime
 import json
-import os
 import random
 import select
+import signal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
 import threading
 import traceback
 
+from .trigger import Trigger
 from .util import (
     clamp,
     class_name,
@@ -62,6 +64,8 @@ class MQWorker:
         timeout=DEFAULT_TIMEOUT,
         jitter=DEFAULT_JITTER,
         lock_key=DEFAULT_LOCK_KEY,
+        threads=1,
+        capture_signals=True,
     ):
         self._engine = engine
         self._queues = queues
@@ -70,26 +74,32 @@ class MQWorker:
         self._timeout = timeout
         self._jitter = jitter
         self._lock_key = lock_key
+        self._threads = threads
+        self._capture_signals = capture_signals
 
         self._running = False
 
         self._dbconn = None
-        self._rpipe, self._wpipe = None, None
+        self._shutdown_trigger = None
+        self._job_trigger = None
         self._next_date = datetime.max
+        self._pool = None
+        self._active_jobs = {}
 
     def shutdown_gracefully(self):
         self._running = False
-        if self._wpipe:
-            os.write(self._wpipe, b'1')
+        if self._shutdown_trigger:
+            self._shutdown_trigger.notify()
 
     def run(self):
         self._running = True
         try:
-            with connect_db(self), connect_pipes(self):
-                eventloop(self)
-
-        except ExitRequest:
-            pass
+            with maybe_capture_signals(self):
+                with connect_pool(self):
+                    with connect_job_trigger(self):
+                        with connect_shutdown_trigger(self):
+                            with connect_db(self):
+                                eventloop(self)
 
         finally:
             self._running = False
@@ -107,11 +117,42 @@ def engine_from_sessionmaker(maker):
 
 
 @contextmanager
+def maybe_capture_signals(ctx):
+    if not ctx._capture_signals:
+        yield
+
+    def onsigterm(*args):
+        # heroku may send multiple sigterm and we want to only respond
+        # to the first one so we'll ignore all the others here
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        log.info('received SIGTERM, triggering workers to shutdown')
+        ctx.shutdown_gracefully()
+
+    def onsigint(*args):
+        # allow another sigint to trigger a KeyboardInterrupt
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        log.info('received Ctrl-C, waiting for workers to complete')
+        ctx.shutdown_gracefully()
+
+    signal.signal(signal.SIGTERM, onsigterm)
+    signal.signal(signal.SIGINT, onsigint)
+    try:
+        yield
+
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+@contextmanager
 def connect_db(ctx):
     with ctx._engine.connect() as conn:
         conn.detach()
         conn.execution_options(autocommit=True)
         assert conn.dialect.driver == 'psycopg2'
+        curs = conn.connection.cursor()
+        for channel in ctx._queues.keys():
+            curs.execute('LISTEN %s;' % channel)
         ctx._dbconn = conn
         try:
             yield
@@ -121,23 +162,36 @@ def connect_db(ctx):
 
 
 @contextmanager
-def connect_pipes(ctx):
-    ctx._rpipe, ctx._wpipe = os.pipe()
+def connect_shutdown_trigger(ctx):
+    ctx._shutdown_trigger = Trigger()
     try:
         yield
 
     finally:
-        try:
-            os.close(ctx._rpipe)
-        except Exception:  # pragma: no cover
-            pass
+        ctx._shutdown_trigger.close()
+        ctx._shutdown_trigger = None
 
-        try:
-            os.close(ctx._wpipe)
-        except Exception:  # pragma: no cover
-            pass
 
-        ctx._rpipe, ctx._wpipe = None, None
+@contextmanager
+def connect_job_trigger(ctx):
+    ctx._job_trigger = Trigger()
+    try:
+        yield
+
+    finally:
+        ctx._job_trigger.close()
+        ctx._job_trigger = None
+
+
+@contextmanager
+def connect_pool(ctx):
+    pool = futures.ThreadPoolExecutor(ctx._threads)
+    ctx._pool = pool
+    try:
+        with pool:
+            yield
+    finally:
+        ctx._pool = None
 
 
 @contextmanager
@@ -234,21 +288,16 @@ def claim_pending_job(ctx, now=None):
             )
 
 
-def handle_job(ctx, job):
+def execute_job(queue, job):
     current_thread = threading.current_thread()
     old_thread_name = current_thread.name
     try:
         current_thread.name = f'{old_thread_name},job={job.id}'
-        queue = ctx._queues[job.queue]
-        result = queue.execute_job(job)
+        return queue.execute_job(job)
 
-    # BaseException to catch KeyboardInterrupt
-    except BaseException as ex:
-        finish_job(ctx, job.id, False, ctx.result_from_error(ex))
+    except BaseException:
         log.exception('error while handling job=%s', job.id)
-
-    else:
-        finish_job(ctx, job.id, True, result, job.cursor)
+        raise
 
     finally:
         current_thread.name = old_thread_name
@@ -261,11 +310,11 @@ def finish_job(ctx, job_id, success, result, cursor=None):
             if success
             else model.JobStates.FAILED
         )
-        job = db.query(model.Job).get(job_id)
-
-        db.execute(
-            'select pg_advisory_unlock(:key, :id)',
-            {'key': ctx._lock_key, 'id': job.lock_id},
+        job = (
+            db.query(model.Job)
+            .with_for_update()
+            .filter_by(id=job_id)
+            .one()
         )
 
         job.state = state
@@ -279,6 +328,12 @@ def finish_job(ctx, job_id, success, result, cursor=None):
 
             elif cursor is not None:
                 log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
+
+        db.flush()
+        db.execute(
+            'select pg_advisory_unlock(:key, :id)',
+            {'key': ctx._lock_key, 'id': job.lock_id},
+        )
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
 
@@ -303,27 +358,22 @@ def save_cursor(db, model, job, cursor):
         cursor_obj.properties = cursor
 
 
-def find_dangling_jobs(db, model, lock_key):
-    return (
-        db.query(model.Job)
-        .outerjoin(pg_locks, sa.and_(
-            pg_locks.c.locktype == 'advisory',
-            pg_locks.c.classid == lock_key,
-            pg_locks.c.objid == model.Job.lock_id,
-        ))
-        .filter(
-            model.Job.state == model.JobStates.RUNNING,
-            model.Job.lock_id != sa.null(),
-            pg_locks.c.objid == sa.null(),
-        )
-    )
-
-
 def mark_lost_jobs(ctx):
     with dbsession(ctx) as (db, model):
         job_q = (
-            find_dangling_jobs(db, model, ctx._lock_key)
+            db.query(model.Job)
             .with_for_update(of=model.Job)
+            .outerjoin(pg_locks, sa.and_(
+                pg_locks.c.locktype == 'advisory',
+                pg_locks.c.classid == ctx._lock_key,
+                pg_locks.c.objid == model.Job.lock_id,
+            ))
+            .filter(
+                model.Job.state == model.JobStates.RUNNING,
+                model.Job.queue.in_(ctx._queues.keys()),
+                model.Job.lock_id != sa.null(),
+                pg_locks.c.objid == sa.null(),
+            )
             .order_by(model.Job.start_time.asc())
         )
         for job in job_q:
@@ -335,13 +385,11 @@ def mark_lost_jobs(ctx):
 def set_next_date(ctx):
     with dbsession(ctx) as (db, model):
         ctx._next_date = (
-            db.query(model.Job.scheduled_time)
+            db.query(sa.func.min(model.Job.scheduled_time))
             .filter(
                 model.Job.state == model.JobStates.PENDING,
                 model.Job.queue.in_(ctx._queues.keys()),
             )
-            .order_by(model.Job.scheduled_time.asc())
-            .limit(1)
             .scalar()
         )
 
@@ -355,22 +403,40 @@ def set_next_date(ctx):
             log.debug('tracking next job in %.3f seconds', when)
 
 
-def flush_pending_jobs(ctx):
-    while ctx._running:
+def enqueue_jobs(ctx):
+    while ctx._running and len(ctx._active_jobs) < ctx._threads:
         job = claim_pending_job(ctx)
         if job is None:
             break
-        handle_job(ctx, job)
+        queue = ctx._queues[job.queue]
+        future = ctx._pool.submit(execute_job, queue, job)
+        ctx._active_jobs[future] = job
+        future.add_done_callback(lambda f: ctx._job_trigger.notify())
 
     if ctx._running:
         set_next_date(ctx)
 
 
+def finish_jobs(ctx):
+    done, _ = futures.wait(list(ctx._active_jobs.keys()), 0)
+    for future in done:
+        job = ctx._active_jobs.pop(future)
+        error = future.exception()
+        if error is not None:
+            finish_job(ctx, job.id, False, ctx.result_from_error(error))
+
+        else:
+            result = future.result()
+            finish_job(ctx, job.id, True, result, job.cursor)
+
+
 class ListenEventType:
     CONTINUE = 'continue'
-    FLUSH = 'flush'
+    JOB_READY = 'job_ready'
+    JOB_DONE = 'job_done'
     NEW_JOB = 'new_job'
     TIMEOUT = 'timeout'
+    SHUTDOWN = 'shutdown'
 
 
 class BoringEvent:
@@ -379,8 +445,10 @@ class BoringEvent:
 
 
 CONTINUE_EVENT = BoringEvent(ListenEventType.CONTINUE)
-FLUSH_EVENT = BoringEvent(ListenEventType.FLUSH)
+JOB_READY_EVENT = BoringEvent(ListenEventType.JOB_READY)
+JOB_DONE_EVENT = BoringEvent(ListenEventType.JOB_DONE)
 TIMEOUT_EVENT = BoringEvent(ListenEventType.TIMEOUT)
+SHUTDOWN_EVENT = BoringEvent(ListenEventType.SHUTDOWN)
 
 
 class NewJobEvent:
@@ -392,21 +460,41 @@ class NewJobEvent:
         self.job_queue = job_queue
 
 
-def listen_for_events(ctx):
-    conn = ctx._dbconn.connection
-    curs = conn.cursor()
-    for channel in ctx._queues.keys():
-        curs.execute('LISTEN %s;' % channel)
-
-
 def get_next_event(ctx):
     conn = ctx._dbconn.connection
 
-    rlist = [conn]
-    if ctx._rpipe is not None:
-        rlist.append(ctx._rpipe)
+    rlist = [ctx._job_trigger]
+    if ctx._running:
+        rlist.append(conn)
+        if ctx._shutdown_trigger is not None:
+            rlist.append(ctx._shutdown_trigger)
 
-    def handle_notifies():
+    # if not saturated then reduce the timeout to the next job start time
+    if ctx._running and len(ctx._active_jobs) < ctx._threads:
+        timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
+    else:
+        timeout = ctx._timeout
+
+    # add some jitter to the timeout if we are waiting on a future event
+    # so that workers are staggered when they wakeup if they are all
+    # waiting on the same event
+    timeout = clamp(timeout, 0, ctx._timeout)
+    timeout += random.uniform(0, ctx._jitter)
+
+    log.debug('watching for events with timeout=%.3f', timeout)
+    result, *_ = select.select(rlist, [], [], timeout)
+
+    # always cleanup jobs, so keep this above the ctx._running check below
+    if ctx._job_trigger in result:
+        ctx._job_trigger.read()
+        return JOB_DONE_EVENT
+
+    # do not handle new jobs while shutting down
+    if not ctx._running:
+        return TIMEOUT_EVENT
+
+    if conn in result:
+        conn.poll()
         event = None
         while conn.notifies:
             notify = conn.notifies.pop(0)
@@ -429,41 +517,24 @@ def get_next_event(ctx):
                 )
         return event or CONTINUE_EVENT
 
-    if conn.notifies:
-        return handle_notifies()
-
-    # add some jitter to the timeout if we are waiting on a future event
-    # so that workers are staggered when they wakeup if they are all
-    # waiting on the same event
-    timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
-    timeout = clamp(timeout, 0, ctx._timeout)
-    timeout += random.uniform(0, ctx._jitter)
-
-    log.debug('watching for events with timeout=%.3f', timeout)
-    result = select.select(rlist, [], [], timeout)
-    if not ctx._running:
-        raise ExitRequest
-
-    if conn in result[0]:
-        conn.poll()
-        return handle_notifies()
-
     if ctx._next_date <= datetime.utcnow():
-        return FLUSH_EVENT
+        return JOB_READY_EVENT
 
     return TIMEOUT_EVENT
 
 
 def eventloop(ctx):
     mark_lost_jobs(ctx)
-    listen_for_events(ctx)
-    flush_pending_jobs(ctx)
-    while ctx._running:
+    enqueue_jobs(ctx)
+    while ctx._running or ctx._active_jobs:
         # wait for either _next_date timeout or a new event
         event = get_next_event(ctx)
 
-        if event.type == ListenEventType.FLUSH:
-            flush_pending_jobs(ctx)
+        if event.type == ListenEventType.JOB_READY:
+            enqueue_jobs(ctx)
+
+        elif event.type == ListenEventType.JOB_DONE:
+            finish_jobs(ctx)
 
         elif event.type == ListenEventType.NEW_JOB:
             if event.job_time < ctx._next_date:
