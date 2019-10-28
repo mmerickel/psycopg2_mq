@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import random
 import select
+import signal
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
@@ -64,6 +65,7 @@ class MQWorker:
         jitter=DEFAULT_JITTER,
         lock_key=DEFAULT_LOCK_KEY,
         threads=1,
+        capture_signals=True,
     ):
         self._engine = engine
         self._queues = queues
@@ -73,6 +75,7 @@ class MQWorker:
         self._jitter = jitter
         self._lock_key = lock_key
         self._threads = threads
+        self._capture_signals = capture_signals
 
         self._running = False
 
@@ -84,17 +87,19 @@ class MQWorker:
         self._active_jobs = {}
 
     def shutdown_gracefully(self):
+        self._running = False
         if self._shutdown_trigger:
             self._shutdown_trigger.notify()
 
     def run(self):
         self._running = True
         try:
-            with connect_pool(self):
-                with connect_job_trigger(self):
-                    with connect_shutdown_trigger(self):
-                        with connect_db(self):
-                            eventloop(self)
+            with maybe_capture_signals(self):
+                with connect_pool(self):
+                    with connect_job_trigger(self):
+                        with connect_shutdown_trigger(self):
+                            with connect_db(self):
+                                eventloop(self)
 
         finally:
             self._running = False
@@ -112,11 +117,42 @@ def engine_from_sessionmaker(maker):
 
 
 @contextmanager
+def maybe_capture_signals(ctx):
+    if not ctx._capture_signals:
+        yield
+
+    def onsigterm(*args):
+        # heroku may send multiple sigterm and we want to only respond
+        # to the first one so we'll ignore all the others here
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        log.info('received SIGTERM, triggering workers to shutdown')
+        ctx.shutdown_gracefully()
+
+    def onsigint(*args):
+        # allow another sigint to trigger a KeyboardInterrupt
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        log.info('received Ctrl-C, waiting for workers to complete')
+        ctx.shutdown_gracefully()
+
+    signal.signal(signal.SIGTERM, onsigterm)
+    signal.signal(signal.SIGINT, onsigint)
+    try:
+        yield
+
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+@contextmanager
 def connect_db(ctx):
     with ctx._engine.connect() as conn:
         conn.detach()
         conn.execution_options(autocommit=True)
         assert conn.dialect.driver == 'psycopg2'
+        curs = conn.connection.cursor()
+        for channel in ctx._queues.keys():
+            curs.execute('LISTEN %s;' % channel)
         ctx._dbconn = conn
         try:
             yield
@@ -424,13 +460,6 @@ class NewJobEvent:
         self.job_queue = job_queue
 
 
-def listen_for_events(ctx):
-    conn = ctx._dbconn.connection
-    curs = conn.cursor()
-    for channel in ctx._queues.keys():
-        curs.execute('LISTEN %s;' % channel)
-
-
 def get_next_event(ctx):
     conn = ctx._dbconn.connection
 
@@ -440,7 +469,32 @@ def get_next_event(ctx):
         if ctx._shutdown_trigger is not None:
             rlist.append(ctx._shutdown_trigger)
 
-    def handle_notifies():
+    # if not saturated then reduce the timeout to the next job start time
+    if ctx._running and len(ctx._active_jobs) < ctx._threads:
+        timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
+    else:
+        timeout = ctx._timeout
+
+    # add some jitter to the timeout if we are waiting on a future event
+    # so that workers are staggered when they wakeup if they are all
+    # waiting on the same event
+    timeout = clamp(timeout, 0, ctx._timeout)
+    timeout += random.uniform(0, ctx._jitter)
+
+    log.debug('watching for events with timeout=%.3f', timeout)
+    result, *_ = select.select(rlist, [], [], timeout)
+
+    # always cleanup jobs, so keep this above the ctx._running check below
+    if ctx._job_trigger in result:
+        ctx._job_trigger.read()
+        return JOB_DONE_EVENT
+
+    # do not handle new jobs while shutting down
+    if not ctx._running:
+        return TIMEOUT_EVENT
+
+    if conn in result:
+        conn.poll()
         event = None
         while conn.notifies:
             notify = conn.notifies.pop(0)
@@ -463,40 +517,6 @@ def get_next_event(ctx):
                 )
         return event or CONTINUE_EVENT
 
-    if conn.notifies:
-        return handle_notifies()
-
-    # if not saturated then reduce the timeout to the next job start time
-    if ctx._running and len(ctx._active_jobs) < ctx._threads:
-        timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
-    else:
-        timeout = ctx._timeout
-
-    # add some jitter to the timeout if we are waiting on a future event
-    # so that workers are staggered when they wakeup if they are all
-    # waiting on the same event
-    timeout = clamp(timeout, 0, ctx._timeout)
-    timeout += random.uniform(0, ctx._jitter)
-
-    log.debug('watching for events with timeout=%.3f', timeout)
-    result, *_ = select.select(rlist, [], [], timeout)
-
-    if ctx._job_trigger in result:
-        ctx._job_trigger.read()
-        return JOB_DONE_EVENT
-
-    if ctx._shutdown_trigger in result:
-        log.info(
-            'received shutdown signal with %d active jobs',
-            len(ctx._active_jobs),
-        )
-        ctx._shutdown_trigger.read()
-        return SHUTDOWN_EVENT
-
-    if conn in result:
-        conn.poll()
-        return handle_notifies()
-
     if ctx._next_date <= datetime.utcnow():
         return JOB_READY_EVENT
 
@@ -505,14 +525,10 @@ def get_next_event(ctx):
 
 def eventloop(ctx):
     mark_lost_jobs(ctx)
-    listen_for_events(ctx)
     enqueue_jobs(ctx)
     while ctx._running or ctx._active_jobs:
         # wait for either _next_date timeout or a new event
         event = get_next_event(ctx)
-
-        if event.type == ListenEventType.SHUTDOWN:
-            ctx._running = False
 
         if event.type == ListenEventType.JOB_READY:
             enqueue_jobs(ctx)
