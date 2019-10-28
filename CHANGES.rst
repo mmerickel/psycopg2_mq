@@ -1,3 +1,22 @@
+0.4 (2019-10-28)
+================
+
+- Add a ``worker`` column to the ``Job`` model to track what worker
+  is handling a job.
+
+- Add an optional ``name`` argument to ``MQWorker`` to name the worker -
+  the value will be recorded in each job.
+
+- Add a ``threads`` argument (default=``1``) to ``MQWorker`` to support
+  handling multiple jobs from the same worker instance instead of making a
+  worker per thread.
+
+- Add ``capture_signals`` argument (default=``True``) to ``MQWorker`` which
+  will capture ``SIGTERM``, ``SIGINT`` and ``SIGUSR1``. The first two will
+  trigger graceful shutdown - they will make the process stop handling new
+  jobs while finishing active jobs. The latter will dump to ``stderr`` a
+  JSON dump of the current status of the worker.
+
 0.3.3 (2019-10-23)
 ==================
 
