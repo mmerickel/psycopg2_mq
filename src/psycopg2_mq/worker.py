@@ -93,10 +93,8 @@ class MQWorker:
             with connect_pool(self):
                 with connect_job_trigger(self):
                     with connect_shutdown_trigger(self):
-                        @db_retry
-                        def _():
-                            with connect_db(self):
-                                eventloop(self)
+                        with connect_db(self):
+                            eventloop(self)
 
         finally:
             self._running = False
@@ -111,20 +109,6 @@ class MQWorker:
 
 def engine_from_sessionmaker(maker):
     return maker.kw['bind']
-
-
-def db_retry(fn):
-    while True:
-        try:
-            return fn()
-
-        except sa.exc.DBAPIError as ex:
-            if ex.connection_invalidated:
-                log.exception(
-                    'mq database connection remotely killed, reconnecting',
-                )
-                continue
-            raise
 
 
 @contextmanager
