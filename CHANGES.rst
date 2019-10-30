@@ -1,3 +1,9 @@
+0.4.1 (2019-10-30)
+==================
+
+- Attempt to reconnect to the database after losing the connection.
+  If the reconnect attempt fails then crash.
+
 0.4 (2019-10-28)
 ================
 
