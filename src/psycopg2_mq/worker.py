@@ -1,9 +1,11 @@
 from concurrent import futures
 from contextlib import contextmanager
 from datetime import datetime
+import functools
 import json
 import os
 import platform
+import psycopg2
 import random
 import select
 import signal
@@ -37,10 +39,6 @@ pg_locks = table(
     column('classid', sa.Integer()),
     column('objid', sa.Integer()),
 )
-
-
-class ExitRequest(Exception):
-    """ Raised to abort the event loop."""
 
 
 class JobContext:
@@ -184,18 +182,14 @@ def maybe_capture_signals(ctx):
 
 @contextmanager
 def connect_db(ctx):
-    with ctx._engine.connect() as conn:
-        conn.detach()
-        conn.execution_options(autocommit=True)
-        assert conn.dialect.driver == 'psycopg2'
-        curs = conn.connection.cursor()
-        for channel in ctx._queues.keys():
-            curs.execute('LISTEN %s;' % channel)
-        ctx._dbconn = conn
-        try:
-            yield
+    rotate_dbconn(ctx)
+    try:
 
-        finally:
+        yield
+
+    finally:
+        if ctx._dbconn is not None:
+            ctx._dbconn.close()
             ctx._dbconn = None
 
 
@@ -232,15 +226,53 @@ def connect_pool(ctx):
         ctx._pool = None
 
 
-@contextmanager
-def dbsession(ctx):
-    with ctx._dbconn.begin():
-        db = Session(bind=ctx._dbconn)
+def rotate_dbconn(ctx):
+    if ctx._dbconn is not None:
+        ctx._dbconn.close()
+
+    conn = ctx._dbconn = ctx._engine.connect()
+    conn.detach()
+    conn.execution_options(autocommit=True)
+    assert conn.dialect.driver == 'psycopg2'
+    curs = conn.connection.cursor()
+    for channel in ctx._queues.keys():
+        curs.execute('LISTEN %s;' % channel)
+    log.info('connected')
+    set_next_date(ctx)
+
+
+def retry_dbconn(fn):
+    @functools.wraps(fn)
+    def wrapper(ctx, *args, **kwargs):
         try:
-            yield (db, ctx._model)
-            db.commit()
-        finally:
-            db.close()
+            return fn(ctx, *args, **kwargs)
+        except sa.exc.DBAPIError as ex:
+            if ex.connection_invalidated:
+                log.warn(
+                    'connection closed unexpectedly, error="%s"',
+                    str(ex).strip(),
+                )
+                rotate_dbconn(ctx)
+                return fn(ctx, *args, **kwargs)
+            raise
+    return wrapper
+
+
+def dbsession(fn):
+    @retry_dbconn
+    @functools.wraps(fn)
+    def wrapper(ctx, *args, **kwargs):
+        with ctx._dbconn.begin():
+            db = Session(bind=ctx._dbconn)
+            try:
+                kwargs['db'] = db
+                kwargs['model'] = ctx._model
+                result = fn(ctx, *args, **kwargs)
+                db.commit()
+                return result
+            finally:
+                db.close()
+    return wrapper
 
 
 def get_lock_id(db, key, job, attempts=3):
@@ -257,74 +289,74 @@ def get_lock_id(db, key, job, attempts=3):
     raise RuntimeError(f'failed to get a unique lock_id for job={job.id}')
 
 
-def claim_pending_job(ctx, now=None):
+@dbsession
+def claim_pending_job(ctx, *, now=None, db, model):
     if now is None:
         now = datetime.utcnow()
 
-    with dbsession(ctx) as (db, model):
-        running_cursor_sq = (
-            db.query(model.Job.cursor_key)
-            .filter(
-                model.Job.state == model.JobStates.RUNNING,
-                model.Job.cursor_key.isnot(None),
-            )
-            .subquery()
+    running_cursor_sq = (
+        db.query(model.Job.cursor_key)
+        .filter(
+            model.Job.state == model.JobStates.RUNNING,
+            model.Job.cursor_key.isnot(None),
         )
-        job = (
-            db.query(model.Job)
-            .outerjoin(
-                running_cursor_sq,
-                running_cursor_sq.c.cursor_key == model.Job.cursor_key,
-            )
-            .with_for_update(of=model.Job, skip_locked=True)
-            .filter(
-                model.Job.state == model.JobStates.PENDING,
-                model.Job.queue.in_(ctx._queues.keys()),
-                model.Job.scheduled_time <= now,
-                running_cursor_sq.c.cursor_key.is_(None),
-            )
-            .order_by(
-                model.Job.scheduled_time.asc(),
-                model.Job.created_time.asc(),
-            )
-            .first()
+        .subquery()
+    )
+    job = (
+        db.query(model.Job)
+        .outerjoin(
+            running_cursor_sq,
+            running_cursor_sq.c.cursor_key == model.Job.cursor_key,
         )
+        .with_for_update(of=model.Job, skip_locked=True)
+        .filter(
+            model.Job.state == model.JobStates.PENDING,
+            model.Job.queue.in_(ctx._queues.keys()),
+            model.Job.scheduled_time <= now,
+            running_cursor_sq.c.cursor_key.is_(None),
+        )
+        .order_by(
+            model.Job.scheduled_time.asc(),
+            model.Job.created_time.asc(),
+        )
+        .first()
+    )
 
-        if job is not None:
-            cursor = None
-            if job.cursor_key is not None:
-                cursor = (
-                    db.query(model.JobCursor)
-                    .filter(model.JobCursor.key == job.cursor_key)
-                    .first()
-                )
-                if cursor is not None:
-                    cursor = cursor.properties
-                else:
-                    cursor = {}
-
-                # since we commit before returning the context, it's safe to
-                # not make a deep copy here because we know the job won't run
-                # and mutate the content until after the snapshot is committed
-                job.cursor_snapshot = cursor
-
-            job.lock_id = get_lock_id(db, ctx._lock_key, job)
-            job.state = model.JobStates.RUNNING
-            job.start_time = datetime.utcnow()
-            job.worker = ctx._name
-
-            log.info(
-                'beginning job=%s %.3fs after scheduled start',
-                job.id,
-                (job.start_time - job.scheduled_time).total_seconds(),
+    if job is not None:
+        cursor = None
+        if job.cursor_key is not None:
+            cursor = (
+                db.query(model.JobCursor)
+                .filter(model.JobCursor.key == job.cursor_key)
+                .first()
             )
-            return JobContext(
-                id=job.id,
-                queue=job.queue,
-                method=job.method,
-                args=job.args,
-                cursor=cursor,
-            )
+            if cursor is not None:
+                cursor = cursor.properties
+            else:
+                cursor = {}
+
+            # since we commit before returning the context, it's safe to
+            # not make a deep copy here because we know the job won't run
+            # and mutate the content until after the snapshot is committed
+            job.cursor_snapshot = cursor
+
+        job.lock_id = get_lock_id(db, ctx._lock_key, job)
+        job.state = model.JobStates.RUNNING
+        job.start_time = datetime.utcnow()
+        job.worker = ctx._name
+
+        log.info(
+            'beginning job=%s %.3fs after scheduled start',
+            job.id,
+            (job.start_time - job.scheduled_time).total_seconds(),
+        )
+        return JobContext(
+            id=job.id,
+            queue=job.queue,
+            method=job.method,
+            args=job.args,
+            cursor=cursor,
+        )
 
 
 def execute_job(queue, job):
@@ -342,37 +374,37 @@ def execute_job(queue, job):
         current_thread.name = old_thread_name
 
 
-def finish_job(ctx, job_id, success, result, cursor=None):
-    with dbsession(ctx) as (db, model):
-        state = (
-            model.JobStates.COMPLETED
-            if success
-            else model.JobStates.FAILED
-        )
-        job = (
-            db.query(model.Job)
-            .with_for_update()
-            .filter_by(id=job_id)
-            .one()
-        )
+@dbsession
+def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
+    state = (
+        model.JobStates.COMPLETED
+        if success
+        else model.JobStates.FAILED
+    )
+    job = (
+        db.query(model.Job)
+        .with_for_update()
+        .filter_by(id=job_id)
+        .one()
+    )
 
-        job.state = state
-        job.result = result
-        job.end_time = datetime.utcnow()
-        job.lock_id = None
+    job.state = state
+    job.result = result
+    job.end_time = datetime.utcnow()
+    job.lock_id = None
 
-        if success:
-            if job.cursor_key is not None:
-                save_cursor(db, model, job, cursor)
+    if success:
+        if job.cursor_key is not None:
+            save_cursor(db, model, job, cursor)
 
-            elif cursor is not None:
-                log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
+        elif cursor is not None:
+            log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
 
-        db.flush()
-        db.execute(
-            'select pg_advisory_unlock(:key, :id)',
-            {'key': ctx._lock_key, 'id': job.lock_id},
-        )
+    db.flush()
+    db.execute(
+        'select pg_advisory_unlock(:key, :id)',
+        {'key': ctx._lock_key, 'id': job.lock_id},
+    )
 
     log.info('finished processing job=%s, state="%s"', job_id, state)
 
@@ -397,40 +429,40 @@ def save_cursor(db, model, job, cursor):
         cursor_obj.properties = cursor
 
 
-def mark_lost_jobs(ctx):
-    with dbsession(ctx) as (db, model):
-        job_q = (
-            db.query(model.Job)
-            .with_for_update(of=model.Job)
-            .outerjoin(pg_locks, sa.and_(
-                pg_locks.c.locktype == 'advisory',
-                pg_locks.c.classid == ctx._lock_key,
-                pg_locks.c.objid == model.Job.lock_id,
-            ))
-            .filter(
-                model.Job.state == model.JobStates.RUNNING,
-                model.Job.queue.in_(ctx._queues.keys()),
-                model.Job.lock_id != sa.null(),
-                pg_locks.c.objid == sa.null(),
-            )
-            .order_by(model.Job.start_time.asc())
+@dbsession
+def mark_lost_jobs(ctx, *, db, model):
+    job_q = (
+        db.query(model.Job)
+        .with_for_update(of=model.Job)
+        .outerjoin(pg_locks, sa.and_(
+            pg_locks.c.locktype == 'advisory',
+            pg_locks.c.classid == ctx._lock_key,
+            pg_locks.c.objid == model.Job.lock_id,
+        ))
+        .filter(
+            model.Job.state == model.JobStates.RUNNING,
+            model.Job.queue.in_(ctx._queues.keys()),
+            model.Job.lock_id != sa.null(),
+            pg_locks.c.objid == sa.null(),
         )
-        for job in job_q:
-            job.state = model.JobStates.LOST
-            job.lock_id = None
-            log.info('marking job=%s as lost', job.id)
+        .order_by(model.Job.start_time.asc())
+    )
+    for job in job_q:
+        job.state = model.JobStates.LOST
+        job.lock_id = None
+        log.info('marking job=%s as lost', job.id)
 
 
-def set_next_date(ctx):
-    with dbsession(ctx) as (db, model):
-        ctx._next_date = (
-            db.query(sa.func.min(model.Job.scheduled_time))
-            .filter(
-                model.Job.state == model.JobStates.PENDING,
-                model.Job.queue.in_(ctx._queues.keys()),
-            )
-            .scalar()
+@dbsession
+def set_next_date(ctx, *, db, model):
+    ctx._next_date = (
+        db.query(sa.func.min(model.Job.scheduled_time))
+        .filter(
+            model.Job.state == model.JobStates.PENDING,
+            model.Job.queue.in_(ctx._queues.keys()),
         )
+        .scalar()
+    )
 
     if ctx._next_date is None:
         log.debug('no pending jobs')
@@ -499,6 +531,47 @@ class NewJobEvent:
         self.job_queue = job_queue
 
 
+def handle_notifies(ctx, conn):
+    try:
+        conn.poll()
+    except psycopg2.OperationalError as ex:
+        # this is a little hairy but since we are using the raw psycopg2
+        # connection we cannot rely on sqlalchemy's nice error handling so
+        # we test the connection directly to see if it's closed and if it is
+        # we reconnect - we set the previous connection to None so that
+        # rotate_dbconn doesn't invoke connection.close() on it
+        if conn.closed:
+            log.warn(
+                'connection closed unexpectedly, error="%s"',
+                str(ex).strip(),
+            )
+            ctx._dbconn = None
+            rotate_dbconn(ctx)
+            return CONTINUE_EVENT
+        raise
+    event = None
+    while conn.notifies:
+        notify = conn.notifies.pop(0)
+        queue, payload = notify.channel, notify.payload
+
+        try:
+            payload = json.loads(payload)
+            job_id, t = payload['j'], payload['t']
+            job_time = int_to_datetime(t)
+
+        except Exception:
+            log.exception('error while handling event from channel=%s, '
+                          'payload=%s', queue, payload)
+
+        if event is None or job_time < event.job_time:
+            event = NewJobEvent(
+                job_queue=queue,
+                job_id=job_id,
+                job_time=job_time,
+            )
+    return event or CONTINUE_EVENT
+
+
 def get_next_event(ctx):
     conn = ctx._dbconn.connection
 
@@ -533,28 +606,7 @@ def get_next_event(ctx):
         return TIMEOUT_EVENT
 
     if conn in result:
-        conn.poll()
-        event = None
-        while conn.notifies:
-            notify = conn.notifies.pop(0)
-            queue, payload = notify.channel, notify.payload
-
-            try:
-                payload = json.loads(payload)
-                job_id, t = payload['j'], payload['t']
-                job_time = int_to_datetime(t)
-
-            except Exception:
-                log.exception('error while handling event from channel=%s, '
-                              'payload=%s', queue, payload)
-
-            if event is None or job_time < event.job_time:
-                event = NewJobEvent(
-                    job_queue=queue,
-                    job_id=job_id,
-                    job_time=job_time,
-                )
-        return event or CONTINUE_EVENT
+        return handle_notifies(ctx, conn)
 
     if ctx._next_date <= datetime.utcnow():
         return JOB_READY_EVENT
@@ -564,7 +616,6 @@ def get_next_event(ctx):
 
 def eventloop(ctx):
     mark_lost_jobs(ctx)
-    enqueue_jobs(ctx)
     while ctx._running or ctx._active_jobs:
         # wait for either _next_date timeout or a new event
         event = get_next_event(ctx)
