@@ -55,6 +55,8 @@ class JobContext:
 
 
 class MQWorker:
+    _now = datetime.utcnow  # for testing
+
     def __init__(
         self,
         *,
@@ -292,7 +294,7 @@ def get_lock_id(db, key, job, attempts=3):
 @dbsession
 def claim_pending_job(ctx, *, now=None, db, model):
     if now is None:
-        now = datetime.utcnow()
+        now = ctx._now()
 
     running_cursor_sq = (
         db.query(model.Job.cursor_key)
@@ -342,7 +344,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
 
         job.lock_id = get_lock_id(db, ctx._lock_key, job)
         job.state = model.JobStates.RUNNING
-        job.start_time = datetime.utcnow()
+        job.start_time = now
         job.worker = ctx._name
 
         log.info(
@@ -390,7 +392,7 @@ def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
 
     job.state = state
     job.result = result
-    job.end_time = datetime.utcnow()
+    job.end_time = ctx._now()
     job.lock_id = None
 
     if success:
@@ -469,7 +471,7 @@ def set_next_date(ctx, *, db, model):
         ctx._next_date = datetime.max
 
     else:
-        when = (ctx._next_date - datetime.utcnow()).total_seconds()
+        when = (ctx._next_date - ctx._now()).total_seconds()
         if when > 0:
             log.debug('tracking next job in %.3f seconds', when)
 
@@ -583,7 +585,7 @@ def get_next_event(ctx):
 
     # if not saturated then reduce the timeout to the next job start time
     if ctx._running and len(ctx._active_jobs) < ctx._threads:
-        timeout = (ctx._next_date - datetime.utcnow()).total_seconds()
+        timeout = (ctx._next_date - ctx._now()).total_seconds()
     else:
         timeout = ctx._timeout
 
@@ -608,7 +610,7 @@ def get_next_event(ctx):
     if conn in result:
         return handle_notifies(ctx, conn)
 
-    if ctx._next_date <= datetime.utcnow():
+    if ctx._next_date <= ctx._now():
         return JOB_READY_EVENT
 
     return TIMEOUT_EVENT
@@ -629,7 +631,7 @@ def eventloop(ctx):
         elif event.type == ListenEventType.NEW_JOB:
             if event.job_time < ctx._next_date:
                 ctx._next_date = event.job_time
-                when = (event.job_time - datetime.utcnow()).total_seconds()
+                when = (event.job_time - ctx._now()).total_seconds()
                 log.debug('tracking next job in %.3f seconds', when)
 
         elif event.type == ListenEventType.TIMEOUT:
