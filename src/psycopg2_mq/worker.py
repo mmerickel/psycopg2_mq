@@ -240,16 +240,22 @@ def rotate_dbconn(ctx):
     for channel in ctx._queues.keys():
         curs.execute('LISTEN %s;' % channel)
     log.info('connected')
-    set_next_date(ctx)
+
+    # if we are executing some jobs then re-lock them so they aren't lost
+    recover_active_jobs(ctx, retry=False)
+
+    # it's possible we missed some jobs while reconnecting so reinitialize
+    set_next_date(ctx, retry=False)
 
 
 def retry_dbconn(fn):
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
+        retry = kwargs.pop('retry', True)
         try:
             return fn(ctx, *args, **kwargs)
         except sa.exc.DBAPIError as ex:
-            if ex.connection_invalidated:
+            if ex.connection_invalidated and retry:
                 log.warn(
                     'connection closed unexpectedly, error="%s"',
                     str(ex).strip(),
@@ -453,6 +459,25 @@ def mark_lost_jobs(ctx, *, db, model):
         job.state = model.JobStates.LOST
         job.lock_id = None
         log.info('marking job=%s as lost', job.id)
+
+
+@dbsession
+def recover_active_jobs(ctx, *, db, model):
+    if not ctx._active_jobs:
+        return
+
+    job_q = (
+        db.query(model.Job)
+        .with_for_update(of=model.Job)
+        .filter(model.Job.id.in_(j.id for j in ctx._active_jobs.values()))
+        .order_by(model.Job.start_time.asc())
+    )
+    for job in job_q:
+        # since the old connection is dead - the old lock is also gone,
+        # we'll re-acquire a new one
+        job.lock_id = get_lock_id(db, ctx._lock_key, job)
+        job.state = model.JobStates.RUNNING
+        log.info('recovering active job=%s', job.id)
 
 
 @dbsession
