@@ -1,3 +1,9 @@
+0.4.2 (2019-10-30)
+==================
+
+- Recover active jobs when the connection is lost by re-locking them
+  and ensuring they are marked running.
+
 0.4.1 (2019-10-30)
 ==================
 
