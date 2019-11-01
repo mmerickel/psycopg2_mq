@@ -1,3 +1,9 @@
+0.4.3 (2019-10-31)
+==================
+
+- Ensure maintenance (finding lost jobs) always runs at set intervals defined
+  by the ``timeout`` parameter.
+
 0.4.2 (2019-10-30)
 ==================
 
