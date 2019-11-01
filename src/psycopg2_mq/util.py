@@ -13,10 +13,6 @@ def int_to_datetime(value):
     return EPOCH + timedelta(seconds=value)
 
 
-def clamp(v, lo, hi):
-    return min(max(v, lo), hi)
-
-
 def class_name(cls):
     name = cls.__qualname__
     module = cls.__module__

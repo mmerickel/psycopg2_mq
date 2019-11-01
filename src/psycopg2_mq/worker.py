@@ -1,6 +1,6 @@
 from concurrent import futures
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 import functools
 import json
 import os
@@ -18,7 +18,6 @@ import traceback
 
 from .trigger import Trigger
 from .util import (
-    clamp,
     class_name,
     int_to_datetime,
     safe_object,
@@ -91,7 +90,8 @@ class MQWorker:
         self._dbconn = None
         self._shutdown_trigger = None
         self._job_trigger = None
-        self._next_date = datetime.max
+        self._next_job_time = datetime.max
+        self._next_maintenance_time = datetime.min
         self._pool = None
         self._active_jobs = {}
 
@@ -247,7 +247,7 @@ def rotate_dbconn(ctx):
     recover_active_jobs(ctx, retry=False)
 
     # it's possible we missed some jobs while reconnecting so reinitialize
-    set_next_date(ctx, retry=False)
+    set_next_job_time(ctx, retry=False)
 
 
 def retry_dbconn(fn):
@@ -484,8 +484,8 @@ def recover_active_jobs(ctx, *, db, model):
 
 
 @dbsession
-def set_next_date(ctx, *, db, model):
-    ctx._next_date = (
+def set_next_job_time(ctx, *, db, model):
+    ctx._next_job_time = (
         db.query(sa.func.min(model.Job.scheduled_time))
         .filter(
             model.Job.state == model.JobStates.PENDING,
@@ -494,12 +494,12 @@ def set_next_date(ctx, *, db, model):
         .scalar()
     )
 
-    if ctx._next_date is None:
+    if ctx._next_job_time is None:
         log.debug('no pending jobs')
-        ctx._next_date = datetime.max
+        ctx._next_job_time = datetime.max
 
     else:
-        when = (ctx._next_date - ctx._now()).total_seconds()
+        when = (ctx._next_job_time - ctx._now()).total_seconds()
         if when > 0:
             log.debug('tracking next job in %.3f seconds', when)
 
@@ -515,7 +515,7 @@ def enqueue_jobs(ctx):
         future.add_done_callback(lambda f: ctx._job_trigger.notify())
 
     if ctx._running:
-        set_next_date(ctx)
+        set_next_job_time(ctx)
 
 
 def finish_jobs(ctx):
@@ -536,7 +536,7 @@ class ListenEventType:
     JOB_READY = 'job_ready'
     JOB_DONE = 'job_done'
     NEW_JOB = 'new_job'
-    TIMEOUT = 'timeout'
+    MAINTENANCE = 'maintenance'
     SHUTDOWN = 'shutdown'
 
 
@@ -548,7 +548,7 @@ class BoringEvent:
 CONTINUE_EVENT = BoringEvent(ListenEventType.CONTINUE)
 JOB_READY_EVENT = BoringEvent(ListenEventType.JOB_READY)
 JOB_DONE_EVENT = BoringEvent(ListenEventType.JOB_DONE)
-TIMEOUT_EVENT = BoringEvent(ListenEventType.TIMEOUT)
+MAINTENANCE_EVENT = BoringEvent(ListenEventType.MAINTENANCE)
 SHUTDOWN_EVENT = BoringEvent(ListenEventType.SHUTDOWN)
 
 
@@ -611,16 +611,18 @@ def get_next_event(ctx):
         if ctx._shutdown_trigger is not None:
             rlist.append(ctx._shutdown_trigger)
 
-    # if not saturated then reduce the timeout to the next job start time
-    if ctx._running and len(ctx._active_jobs) < ctx._threads:
-        timeout = (ctx._next_date - ctx._now()).total_seconds()
-    else:
-        timeout = ctx._timeout
+    now = ctx._now()
+    timeouts = [timedelta(seconds=ctx._timeout)]
+    if ctx._running:
+        timeouts.append(ctx._next_maintenance_time - now)
+
+        if len(ctx._active_jobs) < ctx._threads:
+            timeouts.append(ctx._next_job_time - now)
 
     # add some jitter to the timeout if we are waiting on a future event
     # so that workers are staggered when they wakeup if they are all
     # waiting on the same event
-    timeout = clamp(timeout, 0, ctx._timeout)
+    timeout = max(0, min(timeouts).total_seconds())
     timeout += random.uniform(0, ctx._jitter)
 
     log.debug('watching for events with timeout=%.3f', timeout)
@@ -631,23 +633,26 @@ def get_next_event(ctx):
         ctx._job_trigger.read()
         return JOB_DONE_EVENT
 
-    # do not handle new jobs while shutting down
+    # do not handle new jobs or maintenance while shutting down
     if not ctx._running:
-        return TIMEOUT_EVENT
+        return CONTINUE_EVENT
 
     if conn in result:
         return handle_notifies(ctx, conn)
 
-    if ctx._next_date <= ctx._now():
+    now = ctx._now()
+    if ctx._next_job_time <= now and len(ctx._active_jobs) < ctx._threads:
         return JOB_READY_EVENT
 
-    return TIMEOUT_EVENT
+    if ctx._next_maintenance_time <= now:
+        return MAINTENANCE_EVENT
+
+    return CONTINUE_EVENT
 
 
 def eventloop(ctx):
-    mark_lost_jobs(ctx)
     while ctx._running or ctx._active_jobs:
-        # wait for either _next_date timeout or a new event
+        # wait for either _next_job_time timeout or a new event
         event = get_next_event(ctx)
 
         if event.type == ListenEventType.JOB_READY:
@@ -657,11 +662,14 @@ def eventloop(ctx):
             finish_jobs(ctx)
 
         elif event.type == ListenEventType.NEW_JOB:
-            if event.job_time < ctx._next_date:
-                ctx._next_date = event.job_time
+            if event.job_time < ctx._next_job_time:
+                ctx._next_job_time = event.job_time
                 when = (event.job_time - ctx._now()).total_seconds()
                 log.debug('tracking next job in %.3f seconds', when)
 
-        elif event.type == ListenEventType.TIMEOUT:
+        elif event.type == ListenEventType.MAINTENANCE:
             mark_lost_jobs(ctx)
-            set_next_date(ctx)
+            set_next_job_time(ctx)
+            ctx._next_maintenance_time = (
+                ctx._now() + timedelta(seconds=ctx._timeout)
+            )
