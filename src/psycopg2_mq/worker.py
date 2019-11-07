@@ -387,11 +387,6 @@ def execute_job(queue, job):
 
 @dbsession
 def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
-    state = (
-        model.JobStates.COMPLETED
-        if success
-        else model.JobStates.FAILED
-    )
     job = (
         db.query(model.Job)
         .with_for_update()
@@ -399,39 +394,46 @@ def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
         .one()
     )
 
-    job.state = state
-    job.result = result
-    job.end_time = ctx._now()
-    job.lock_id = None
-
     if success:
         if job.cursor_key is not None:
-            save_cursor(db, model, job, cursor)
+            save_cursor(db, model, job.cursor_key, cursor)
 
         elif cursor is not None:
             log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
 
+    job.state = (
+        model.JobStates.COMPLETED
+        if success
+        else model.JobStates.FAILED
+    )
+    job.result = result
+    job.end_time = ctx._now()
+
+    lock_id = job.lock_id
+    job.lock_id = None
+
     db.flush()
+
     db.execute(
         'select pg_advisory_unlock(:key, :id)',
-        {'key': ctx._lock_key, 'id': job.lock_id},
+        {'key': ctx._lock_key, 'id': lock_id},
     )
 
-    log.info('finished processing job=%s, state="%s"', job_id, state)
+    log.info('finished processing job=%s, state="%s"', job_id, job.state)
 
 
-def save_cursor(db, model, job, cursor):
+def save_cursor(db, model, key, cursor):
     if cursor is None:
         cursor = {}
     cursor_obj = (
         db.query(model.JobCursor)
-        .filter(model.JobCursor.key == job.cursor_key)
+        .filter(model.JobCursor.key == key)
         .with_for_update()
         .first()
     )
     if cursor_obj is None:
         cursor_obj = model.JobCursor(
-            key=job.cursor_key,
+            key=key,
             properties=cursor,
         )
         db.add(cursor_obj)

@@ -1,3 +1,8 @@
+0.4.4 (2019-11-07)
+==================
+
+- Ensure the advisory locks are released when a job completes.
+
 0.4.3 (2019-10-31)
 ==================
 
