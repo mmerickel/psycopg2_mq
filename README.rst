@@ -5,9 +5,6 @@ psycopg2_mq
 .. image:: https://img.shields.io/pypi/v/psycopg2_mq.svg
     :target: https://pypi.org/pypi/psycopg2_mq
 
-.. image:: https://img.shields.io/travis/mmerickel/psycopg2_mq/master.svg
-    :target: https://travis-ci.org/mmerickel/psycopg2_mq
-
 ``psycopg2_mq`` is a message queue implemented on top of
 `PostgreSQL <https://www.postgresql.org/>`__,
 `SQLAlchemy <https://www.sqlalchemy.org/>`__, and
