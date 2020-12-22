@@ -55,16 +55,16 @@ class MQSource:
         while True:
             job_id = self.dbsession.execute(
                 insert(Job.__table__)
-                .values(
-                    queue=queue,
-                    method=method,
-                    args=args,
-                    created_time=now,
-                    scheduled_time=when,
-                    state=JobStates.PENDING,
-                    cursor_key=cursor_key,
+                .values({
+                    Job.queue: queue,
+                    Job.method: method,
+                    Job.args: args,
+                    Job.created_time: now,
+                    Job.scheduled_time: when,
+                    Job.state: JobStates.PENDING,
+                    Job.cursor_key: cursor_key,
                     **job_kwargs,
-                )
+                })
                 .on_conflict_do_nothing(
                     index_elements=[Job.cursor_key],
                     index_where=(Job.state == JobStates.PENDING),
