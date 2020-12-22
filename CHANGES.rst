@@ -1,5 +1,5 @@
 0.4.5 (2020-12-22)
-------------------
+==================
 
 - Use column objects in the insert statement to support ORM-level synonyms,
   enabling the schema to have columns with different names.
