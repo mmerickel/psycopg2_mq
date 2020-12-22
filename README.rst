@@ -118,9 +118,9 @@ Example Source
 
     dbsession = session_factory()
     with dbsession.begin():
-      mq = MQSource(
-          dbsession=dbsession,
-          model=model,
-      )
-      job = mq.call('echo', 'hello', {'name': 'Andy'})
-      print(f'queued job={job.id}')
+        mq = MQSource(
+            dbsession=dbsession,
+            model=model,
+        )
+        job = mq.call('echo', 'hello', {'name': 'Andy'})
+        print(f'queued job={job.id}')
