@@ -1,3 +1,10 @@
+unreleased
+==========
+
+- Add a scheduler model with support for emitting periodic jobs based on
+  RRULE syntax.
+  See https://github.com/mmerickel/psycopg2_mq/pull/11
+
 0.4.5 (2020-12-22)
 ==================
 
