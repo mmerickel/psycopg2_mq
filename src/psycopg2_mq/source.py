@@ -216,6 +216,7 @@ class MQSource:
             log.info(f'schedule={schedule_id} is already disabled')
             return
         schedule.is_enabled = False
+        schedule.next_execution_time = None
         log.debug(f'disabled schedule={schedule_id}')
 
     def enable_schedule(self, schedule_id, *, now=None, reload=True):
