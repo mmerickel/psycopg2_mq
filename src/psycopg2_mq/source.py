@@ -1,4 +1,6 @@
 from datetime import datetime
+from dateutil.rrule import rrulestr
+from dateutil.tz import UTC
 import json
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
@@ -46,6 +48,8 @@ class MQSource:
         Job = self.model.Job
         JobStates = self.model.JobStates
 
+        schedule_id = job_kwargs.get('schedule_id')
+
         job_id = None
         notify = False
         # there is a race condition here in READ COMMITTED mode where
@@ -72,8 +76,16 @@ class MQSource:
                 .returning(Job.id)
             ).scalar()
             if job_id is not None:
-                log.info('scheduled new job=%s on queue=%s, method=%s',
-                         job_id, queue, method)
+                if schedule_id is not None:
+                    log.info(
+                        f'created new job={job_id} on queue={queue}, '
+                        f'method={method} from schedule={schedule_id}'
+                    )
+                else:
+                    log.info(
+                        f'created new job={job_id} on queue={queue}, '
+                        f'method={method}'
+                    )
                 notify = True
                 break
 
@@ -101,13 +113,16 @@ class MQSource:
                 if conflict_resolver is not None:
                     conflict_resolver(job)
 
+                    if self.transaction_manager:
+                        mark_changed(self.dbsession)
+
                 break
 
         if notify:
             epoch_seconds = datetime_to_int(when)
             payload = json.dumps({'j': job_id, 't': epoch_seconds})
             self.dbsession.execute(sa.select([
-                sa.func.pg_notify(queue, payload),
+                sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
             ]))
             # XXX notify is always true when the raw insert works above so we
             # handle the two scenarios (notify and raw insert) in which
@@ -118,13 +133,13 @@ class MQSource:
         return job_id
 
     @property
-    def query(self):
+    def query_job(self):
         return self.dbsession.query(self.model.Job)
 
     def find_job(self, job_id):
-        return self.query.get(job_id)
+        return self.query_job.get(job_id)
 
-    def retry(self, job_id):
+    def retry_job(self, job_id):
         job = self.find_job(job_id)
         if job is None or job.state not in {
             self.model.JobStates.FAILED,
@@ -136,3 +151,108 @@ class MQSource:
             when=job.scheduled_time,
             cursor_key=job.cursor_key,
         )
+
+    def reload_scheduler(self, queue, *, now=None):
+        if now is None:
+            now = datetime.utcnow()
+        epoch_seconds = datetime_to_int(now)
+        payload = json.dumps({'s': None, 't': epoch_seconds})
+        self.dbsession.execute(sa.select([
+            sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
+        ]))
+
+    def add_schedule(
+        self,
+        queue,
+        method,
+        args,
+        *,
+        rrule,
+        is_enabled=True,
+        cursor_key=None,
+        schedule_kwargs=None,
+        now=None,
+        reload=True,
+    ):
+        if now is None:
+            now = datetime.utcnow()
+        if args is None:
+            args = {}
+        if schedule_kwargs is None:
+            schedule_kwargs = {}
+
+        next_execution_time = get_next_schedule_execution_time(rrule, now, now)
+
+        schedule = self.model.JobSchedule(
+            queue=queue,
+            method=method,
+            args=args,
+            rrule=rrule,
+            is_enabled=is_enabled,
+            cursor_key=cursor_key,
+            created_time=now,
+            next_execution_time=next_execution_time,
+            **schedule_kwargs,
+        )
+        self.dbsession.add(schedule)
+
+        if reload:
+            self.reload_scheduler(queue, now=schedule.next_execution_time)
+        return schedule
+
+    @property
+    def query_schedule(self):
+        return self.dbsession.query(self.model.JobSchedule)
+
+    def find_schedule(self, schedule_id):
+        return self.query_schedule.get(schedule_id)
+
+    def disable_schedule(self, schedule_id):
+        schedule = self.find_schedule(schedule_id)
+        schedule.is_enabled = False
+        log.debug(f'disabled schedule={schedule_id}')
+
+    def enable_schedule(self, schedule_id, *, now=None):
+        if now is None:
+            now = datetime.utcnow()
+        schedule = self.find_schedule(schedule_id)
+        schedule.is_enabled = True
+        schedule.next_execution_time = get_next_schedule_execution_time(
+            schedule.rrule, schedule.created_time, now)
+        if schedule.next_execution_time is not None:
+            self.reload_schedule_queue(schedule.queue, now=schedule.next_execution_time)
+        log.debug(
+            f'enabling schedule={schedule_id}, '
+            f'next execution time={schedule.next_execution_time}'
+        )
+
+    def _apply_schedule(self, schedule, *, now=None):
+        job_id = self.call(
+            queue=schedule.queue,
+            method=schedule.method,
+            args=schedule.args,
+            cursor_key=schedule.cursor_key,
+            now=now,
+            when=schedule.next_execution_time,
+            job_kwargs=dict(schedule_id=schedule.id),
+        )
+
+        schedule.next_execution_time = get_next_schedule_execution_time(
+            schedule.rrule, schedule.created_time, now)
+        return job_id
+
+
+def get_next_schedule_execution_time(rrule, dtstart, after):
+    rrule = rrulestr(rrule, dtstart=dtstart)
+    try:
+        ts = rrule.after(after)
+    except Exception:
+        # we do not know if the rrule's dtstart is timezone-aware or not
+        # and dateutil doesn't allow us to provide a default of UTC and
+        # so what we do is try again with a tz-aware object
+        after = after.replace(tzinfo=UTC)
+        ts = rrule.after(after)
+
+    if ts is not None and ts.tzinfo is not None:
+        ts = ts.astimezone(UTC).replace(tzinfo=None)
+    return ts
