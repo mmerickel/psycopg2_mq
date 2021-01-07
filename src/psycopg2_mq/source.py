@@ -204,18 +204,21 @@ class MQSource:
     def query_schedule(self):
         return self.dbsession.query(self.model.JobSchedule)
 
-    def find_schedule(self, schedule_id):
-        return self.query_schedule.get(schedule_id)
+    def get_schedule(self, schedule_id, *, for_update=False):
+        q = self.query_schedule.filter_by(id=schedule_id)
+        if for_update:
+            q = q.with_for_update()
+        return q.one()
 
     def disable_schedule(self, schedule_id):
-        schedule = self.find_schedule(schedule_id)
+        schedule = self.get_schedule(schedule_id, for_update=True)
         schedule.is_enabled = False
         log.debug(f'disabled schedule={schedule_id}')
 
     def enable_schedule(self, schedule_id, *, now=None, reload=True):
         if now is None:
             now = datetime.utcnow()
-        schedule = self.find_schedule(schedule_id)
+        schedule = self.get_schedule(schedule_id, for_update=True)
         schedule.is_enabled = True
         schedule.next_execution_time = get_next_schedule_execution_time(
             schedule.rrule, schedule.created_time, now)
