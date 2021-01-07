@@ -212,14 +212,14 @@ class MQSource:
         schedule.is_enabled = False
         log.debug(f'disabled schedule={schedule_id}')
 
-    def enable_schedule(self, schedule_id, *, now=None):
+    def enable_schedule(self, schedule_id, *, now=None, reload=True):
         if now is None:
             now = datetime.utcnow()
         schedule = self.find_schedule(schedule_id)
         schedule.is_enabled = True
         schedule.next_execution_time = get_next_schedule_execution_time(
             schedule.rrule, schedule.created_time, now)
-        if schedule.next_execution_time is not None:
+        if reload and schedule.next_execution_time is not None:
             self.reload_schedule_queue(schedule.queue, now=schedule.next_execution_time)
         log.debug(
             f'enabling schedule={schedule_id}, '
