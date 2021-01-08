@@ -1,12 +1,10 @@
 from datetime import datetime
-from dateutil.rrule import rrulestr
-from dateutil.tz import UTC
 import json
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 from zope.sqlalchemy import mark_changed
 
-from .util import datetime_to_int
+from .util import datetime_to_int, get_next_rrule_time
 
 
 log = __import__('logging').getLogger(__name__)
@@ -78,13 +76,13 @@ class MQSource:
             if job_id is not None:
                 if schedule_id is not None:
                     log.info(
-                        f'created new job={job_id} on queue={queue}, '
-                        f'method={method} from schedule={schedule_id}'
+                        'created new job=%s on queue=%s, method=%s from schedule=%s',
+                        job_id, queue, method, schedule_id,
                     )
                 else:
                     log.info(
-                        f'created new job={job_id} on queue={queue}, '
-                        f'method={method}'
+                        'created new job=%s on queue=%s, method=%s',
+                        job_id, queue, method,
                     )
                 notify = True
                 break
@@ -181,7 +179,7 @@ class MQSource:
         if schedule_kwargs is None:
             schedule_kwargs = {}
 
-        next_execution_time = get_next_schedule_execution_time(rrule, now, now)
+        next_execution_time = get_next_rrule_time(rrule, now, now)
 
         schedule = self.model.JobSchedule(
             queue=queue,
@@ -213,27 +211,27 @@ class MQSource:
     def disable_schedule(self, schedule_id):
         schedule = self.get_schedule(schedule_id, for_update=True)
         if not schedule.is_enabled:
-            log.info(f'schedule={schedule_id} is already disabled')
+            log.info('schedule=%s is already disabled', schedule_id)
             return
         schedule.is_enabled = False
         schedule.next_execution_time = None
-        log.debug(f'disabled schedule={schedule_id}')
+        log.debug('disabled schedule=%s', schedule_id)
 
     def enable_schedule(self, schedule_id, *, now=None, reload=True):
         if now is None:
             now = datetime.utcnow()
         schedule = self.get_schedule(schedule_id, for_update=True)
         if schedule.is_enabled:
-            log.info(f'schedule={schedule_id} is already enabled')
+            log.info('schedule=%s is already enabled', schedule_id)
             return
         schedule.is_enabled = True
-        schedule.next_execution_time = get_next_schedule_execution_time(
+        schedule.next_execution_time = get_next_rrule_time(
             schedule.rrule, schedule.created_time, now)
         if reload and schedule.next_execution_time is not None:
             self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)
         log.debug(
-            f'enabling schedule={schedule_id}, '
-            f'next execution time={schedule.next_execution_time}'
+            'enabling schedule=%s, next execution time=%s',
+            schedule_id, schedule.next_execution_time,
         )
 
     def _apply_schedule(self, schedule, *, now=None):
@@ -247,22 +245,6 @@ class MQSource:
             job_kwargs=dict(schedule_id=schedule.id),
         )
 
-        schedule.next_execution_time = get_next_schedule_execution_time(
+        schedule.next_execution_time = get_next_rrule_time(
             schedule.rrule, schedule.created_time, now)
         return job_id
-
-
-def get_next_schedule_execution_time(rrule, dtstart, after):
-    rrule = rrulestr(rrule, dtstart=dtstart)
-    try:
-        ts = rrule.after(after)
-    except Exception:
-        # we do not know if the rrule's dtstart is timezone-aware or not
-        # and dateutil doesn't allow us to provide a default of UTC and
-        # so what we do is try again with a tz-aware object
-        after = after.replace(tzinfo=UTC)
-        ts = rrule.after(after)
-
-    if ts is not None and ts.tzinfo is not None:
-        ts = ts.astimezone(UTC).replace(tzinfo=None)
-    return ts

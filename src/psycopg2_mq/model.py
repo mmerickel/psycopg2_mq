@@ -2,7 +2,13 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as pg
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from sqlalchemy.schema import Column, CheckConstraint, ForeignKey, Index
+from sqlalchemy.schema import (
+    Column,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    PrimaryKeyConstraint,
+)
 from sqlalchemy.types import (
     BigInteger,
     Boolean,
@@ -16,11 +22,12 @@ from sqlalchemy.types import (
 class Model:
     channel_prefix = 'mq_'
 
-    def __init__(self, Job, JobStates, JobCursor, JobSchedule):
+    def __init__(self, Job, JobStates, JobCursor, JobSchedule, Lock):
         self.Job = Job
         self.JobStates = JobStates
         self.JobCursor = JobCursor
         self.JobSchedule = JobSchedule
+        self.Lock = Lock
 
 
 class JobStates:
@@ -46,9 +53,9 @@ def make_default_model(metadata, JobStates=JobStates):
     )
 
     class Job(Base):
-        __table_name__ = 'mq_job'
+        __tablename__ = 'mq_job'
 
-        id = Column(BigInteger, primary=True)
+        id = Column(BigInteger, primary_key=True)
         start_time = Column(DateTime)
         end_time = Column(DateTime)
         state = Column(state_enum, nullable=False, index=True)
@@ -108,18 +115,18 @@ def make_default_model(metadata, JobStates=JobStates):
             ).format(self)
 
     class JobCursor(Base):
-        __table_name__ = 'mq_job_cursor'
+        __tablename__ = 'mq_job_cursor'
 
-        key = Column(Text, primary=True)
+        key = Column(Text, primary_key=True)
         properties = Column(pg.JSONB, default=dict, nullable=False)
 
         def __repr__(self):
             return '<JobCursor(key="{0.key}")>'.format(self)
 
     class JobSchedule(Base):
-        __table_name__ = 'mq_job_schedule'
+        __tablename__ = 'mq_job_schedule'
 
-        id = Column(BigInteger, primary=True)
+        id = Column(BigInteger, primary_key=True)
 
         created_time = Column(DateTime, nullable=False)
 
@@ -147,4 +154,17 @@ def make_default_model(metadata, JobStates=JobStates):
                 .format(self)
             )
 
-    return Model(Job, JobStates, JobCursor, JobSchedule)
+    class Lock(Base):
+        __tablename__ = 'mq_lock'
+
+        queue = Column(Text, nullable=False)
+        key = Column(Text, nullable=False)
+
+        lock_id = Column(Integer, nullable=False)
+        worker = Column(Text, nullable=False)
+
+        __table_args__ = (
+            PrimaryKeyConstraint('queue', 'key', name='pk_mq_lock_queue_key'),
+        )
+
+    return Model(Job, JobStates, JobCursor, JobSchedule, Lock)
