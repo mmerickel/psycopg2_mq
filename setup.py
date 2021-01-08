@@ -8,6 +8,7 @@ readme = readfile('README.rst')
 changes = readfile('CHANGES.rst')
 
 requires = [
+    'python-dateutil',
     'SQLAlchemy',
     'transaction',
     'zope.sqlalchemy',

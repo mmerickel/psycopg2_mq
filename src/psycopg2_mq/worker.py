@@ -16,6 +16,7 @@ import sys
 import threading
 import traceback
 
+from .source import MQSource
 from .trigger import Trigger
 from .util import (
     class_name,
@@ -70,6 +71,7 @@ class MQWorker:
         threads=1,
         capture_signals=True,
         name=None,
+        scheduler_queues=None,
     ):
         self._engine = engine
         self._queues = queues
@@ -91,9 +93,12 @@ class MQWorker:
         self._shutdown_trigger = None
         self._job_trigger = None
         self._next_job_time = datetime.max
+        self._next_schedule_time = datetime.max
         self._next_maintenance_time = datetime.min
         self._pool = None
         self._active_jobs = {}
+        self._auto_scheduler = scheduler_queues is None
+        self._scheduler_queues = set(scheduler_queues or [])
 
     def shutdown_gracefully(self):
         self._running = False
@@ -122,11 +127,13 @@ class MQWorker:
         }
 
     def get_status(self):
+        # shallow copy to avoid iterating a shared reference
+        active_jobs = self._active_jobs.copy()
         return {
             'name': self._name,
             'running': self._running,
             'total_threads': self._threads,
-            'idle_threads': self._threads - len(self._active_jobs),
+            'idle_threads': self._threads - len(active_jobs),
             'active_jobs': [
                 {
                     'id': j.id,
@@ -135,7 +142,7 @@ class MQWorker:
                     'args': j.args,
                     'cursor_key': j.cursor_key,
                 }
-                for j in self._active_jobs.values()
+                for j in active_jobs.values()
             ],
         }
 
@@ -239,12 +246,16 @@ def rotate_dbconn(ctx):
     conn.execution_options(autocommit=True)
     assert conn.dialect.driver == 'psycopg2'
     curs = conn.connection.cursor()
-    for channel in ctx._queues.keys():
-        curs.execute('LISTEN %s;' % channel)
+    for queue in ctx._queues.keys():
+        curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
     log.info('connected')
 
     # if we are executing some jobs then re-lock them so they aren't lost
     recover_active_jobs(ctx, retry=False)
+
+    # we lost our locks on the scheduling queues so reinitilize
+    lock_schedule_queues(ctx, retry=False)
+    set_next_schedule_time(ctx, retry=False)
 
     # it's possible we missed some jobs while reconnecting so reinitialize
     set_next_job_time(ctx, retry=False)
@@ -253,7 +264,11 @@ def rotate_dbconn(ctx):
 def retry_dbconn(fn):
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
-        retry = kwargs.pop('retry', True)
+        retry = 'db' not in kwargs
+        retry = kwargs.pop('retry', retry)
+        # protect against misuse where db and retry=True are both supplied
+        if 'db' in kwargs and retry:
+            raise ValueError('cannot set retry when active db is manually supplied')
         try:
             return fn(ctx, *args, **kwargs)
         except sa.exc.DBAPIError as ex:
@@ -272,6 +287,11 @@ def dbsession(fn):
     @retry_dbconn
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
+        # support external db and acting as a passthrough
+        if 'db' in kwargs:
+            kwargs.setdefault('model', ctx._model)
+            return fn(ctx, *args, **kwargs)
+        # open a new session and commit/rollback when complete
         with ctx._dbconn.begin():
             db = Session(bind=ctx._dbconn)
             try:
@@ -533,11 +553,76 @@ def finish_jobs(ctx):
             finish_job(ctx, job.id, True, result, job.cursor)
 
 
+@dbsession
+def lock_schedule_queues(ctx, *, db, model):
+    if not ctx._auto_scheduler:
+        return
+
+    ctx._scheduler_queues = set(ctx._queues.keys())
+
+
+@dbsession
+def set_next_schedule_time(ctx, *, db, model):
+    if not ctx._scheduler_queues:
+        ctx._next_schedule_time = datetime.max
+        return
+
+    ctx._next_schedule_time = (
+        db.query(sa.func.min(model.JobSchedule.next_execution_time))
+        .filter(
+            model.JobSchedule.queue.in_(ctx._scheduler_queues),
+            model.JobSchedule.is_enabled == sa.true(),
+        )
+        .scalar()
+    )
+
+    if ctx._next_schedule_time is None:
+        log.debug('no pending schedules')
+        ctx._next_schedule_time = datetime.max
+
+    else:
+        when = (ctx._next_schedule_time - ctx._now()).total_seconds()
+        if when > 0:
+            log.debug('tracking next schedule in %.3f seconds', when)
+
+
+@dbsession
+def apply_schedules(ctx, *, now=None, db, model):
+    if now is None:
+        now = ctx._now()
+
+    mq_source = MQSource(dbsession=db, model=model)
+    schedules = (
+        db.query(model.JobSchedule)
+        .with_for_update(of=model.JobSchedule, skip_locked=True)
+        .filter(
+            model.JobSchedule.next_execution_time <= now,
+            model.JobSchedule.queue.in_(ctx._scheduler_queues),
+            model.JobSchedule.is_enabled == sa.true(),
+        )
+        .order_by(
+            model.JobSchedule.next_execution_time.asc(),
+            model.JobSchedule.created_time.asc(),
+        )
+        .all()
+    )
+    for schedule in schedules:
+        mq_source._apply_schedule(schedule, now=now)
+
+    if ctx._running:
+        set_next_schedule_time(ctx, db=db, model=model)
+
+        # refresh the job status because this thread will have missed the
+        # notify from the new jobs
+        set_next_job_time(ctx, db=db, model=model)
+
+
 class ListenEventType:
     CONTINUE = 'continue'
+    NOTIFY = 'notify'
     JOB_READY = 'job_ready'
     JOB_DONE = 'job_done'
-    NEW_JOB = 'new_job'
+    SCHEDULE_READY = 'schedule_ready'
     MAINTENANCE = 'maintenance'
     SHUTDOWN = 'shutdown'
 
@@ -550,17 +635,15 @@ class BoringEvent:
 CONTINUE_EVENT = BoringEvent(ListenEventType.CONTINUE)
 JOB_READY_EVENT = BoringEvent(ListenEventType.JOB_READY)
 JOB_DONE_EVENT = BoringEvent(ListenEventType.JOB_DONE)
+SCHEDULE_READY_EVENT = BoringEvent(ListenEventType.SCHEDULE_READY)
 MAINTENANCE_EVENT = BoringEvent(ListenEventType.MAINTENANCE)
 SHUTDOWN_EVENT = BoringEvent(ListenEventType.SHUTDOWN)
 
 
-class NewJobEvent:
-    type = ListenEventType.NEW_JOB
-
-    def __init__(self, *, job_time, job_queue, job_id):
-        self.job_id = job_id
-        self.job_time = job_time
-        self.job_queue = job_queue
+class NotifyEvent:
+    type = ListenEventType.NOTIFY
+    next_job_time = datetime.max
+    next_schedule_time = datetime.max
 
 
 def handle_notifies(ctx, conn):
@@ -581,27 +664,40 @@ def handle_notifies(ctx, conn):
             rotate_dbconn(ctx)
             return CONTINUE_EVENT
         raise
-    event = None
+
+    event = NotifyEvent()
     while conn.notifies:
         notify = conn.notifies.pop(0)
-        queue, payload = notify.channel, notify.payload
+        channel, payload = notify.channel, notify.payload
 
         try:
-            payload = json.loads(payload)
-            job_id, t = payload['j'], payload['t']
-            job_time = int_to_datetime(t)
+            queue = channel[len(ctx._model.channel_prefix):]
+            data = json.loads(payload)
+            t = data['t']
+            event_time = int_to_datetime(t)
+
+            if 'j' in data:
+                if event_time < event.next_job_time:
+                    event = NotifyEvent()
+                    event.next_job_time = event_time
+
+            elif 's' in data:
+                if (
+                    queue in ctx._scheduler_queues
+                    and event_time < event.next_schedule_time
+                ):
+                    event = NotifyEvent()
+                    event.next_schedule_time = event_time
+
+            else:
+                raise Exception
 
         except Exception:
             log.exception('error while handling event from channel=%s, '
-                          'payload=%s', queue, payload)
+                          'payload=%s', channel, payload)
+            continue
 
-        if event is None or job_time < event.job_time:
-            event = NewJobEvent(
-                job_queue=queue,
-                job_id=job_id,
-                job_time=job_time,
-            )
-    return event or CONTINUE_EVENT
+    return event
 
 
 def get_next_event(ctx):
@@ -617,6 +713,7 @@ def get_next_event(ctx):
     timeouts = [timedelta(seconds=ctx._timeout)]
     if ctx._running:
         timeouts.append(ctx._next_maintenance_time - now)
+        timeouts.append(ctx._next_schedule_time - now)
 
         if len(ctx._active_jobs) < ctx._threads:
             timeouts.append(ctx._next_job_time - now)
@@ -643,6 +740,9 @@ def get_next_event(ctx):
         return handle_notifies(ctx, conn)
 
     now = ctx._now()
+    if ctx._next_schedule_time <= now:
+        return SCHEDULE_READY_EVENT
+
     if ctx._next_job_time <= now and len(ctx._active_jobs) < ctx._threads:
         return JOB_READY_EVENT
 
@@ -663,14 +763,24 @@ def eventloop(ctx):
         elif event.type == ListenEventType.JOB_DONE:
             finish_jobs(ctx)
 
-        elif event.type == ListenEventType.NEW_JOB:
-            if event.job_time < ctx._next_job_time:
-                ctx._next_job_time = event.job_time
-                when = (event.job_time - ctx._now()).total_seconds()
+        elif event.type == ListenEventType.SCHEDULE_READY:
+            apply_schedules(ctx)
+
+        elif event.type == ListenEventType.NOTIFY:
+            if event.next_job_time < ctx._next_job_time:
+                ctx._next_job_time = event.next_job_time
+                when = (event.next_job_time - ctx._now()).total_seconds()
                 log.debug('tracking next job in %.3f seconds', when)
+
+            if event.next_schedule_time < ctx._next_schedule_time:
+                ctx._next_schedule_time = event.next_schedule_time
+                when = (event.next_schedule_time - ctx._now()).total_seconds()
+                log.debug('tracking next schedule in %.3f seconds', when)
 
         elif event.type == ListenEventType.MAINTENANCE:
             mark_lost_jobs(ctx)
+            lock_schedule_queues(ctx)
+            set_next_schedule_time(ctx)
             set_next_job_time(ctx)
             ctx._next_maintenance_time = (
                 ctx._now() + timedelta(seconds=ctx._timeout)

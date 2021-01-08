@@ -1,9 +1,11 @@
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as pg
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.schema import Column, CheckConstraint, Index
+from sqlalchemy.orm import relationship
+from sqlalchemy.schema import Column, CheckConstraint, ForeignKey, Index
 from sqlalchemy.types import (
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     Integer,
@@ -12,10 +14,13 @@ from sqlalchemy.types import (
 
 
 class Model:
-    def __init__(self, Job, JobStates, JobCursor):
+    channel_prefix = 'mq_'
+
+    def __init__(self, Job, JobStates, JobCursor, JobSchedule):
         self.Job = Job
         self.JobStates = JobStates
         self.JobCursor = JobCursor
+        self.JobSchedule = JobSchedule
 
 
 class JobStates:
@@ -56,6 +61,12 @@ def make_default_model(metadata, JobStates=JobStates):
         args = Column(pg.JSONB, nullable=False)
         result = Column(pg.JSONB)
 
+        schedule_id = Column(
+            ForeignKey('mq_job_schedule.id', ondelete='cascade', onupdate='cascade'),
+            index=True,
+        )
+        schedule = relationship('JobSchedule', backref='jobs')
+
         cursor_key = Column(Text)
         cursor_snapshot = Column(pg.JSONB)
 
@@ -87,13 +98,13 @@ def make_default_model(metadata, JobStates=JobStates):
         def __repr__(self):
             return (
                 '<Job('
-                'id={0.id}, '
-                'state="{0.state}", '
-                'scheduled_time={0.scheduled_time}, '
-                'queue="{0.queue}", '
-                'method="{0.method}", '
-                'cursor_key="{0.cursor_key}"'
-                ')'
+                'id={0.id}'
+                ', state="{0.state}", '
+                ', scheduled_time={0.scheduled_time}'
+                ', queue="{0.queue}"'
+                ', method="{0.method}"'
+                ', cursor_key="{0.cursor_key}"'
+                ')>'
             ).format(self)
 
     class JobCursor(Base):
@@ -105,4 +116,35 @@ def make_default_model(metadata, JobStates=JobStates):
         def __repr__(self):
             return '<JobCursor(key="{0.key}")>'.format(self)
 
-    return Model(Job, JobStates, JobCursor)
+    class JobSchedule(Base):
+        __table_name__ = 'mq_job_schedule'
+
+        id = Column(BigInteger, primary=True)
+
+        created_time = Column(DateTime, nullable=False)
+
+        is_enabled = Column(Boolean, nullable=False)
+
+        rrule = Column(Text, nullable=False)
+
+        queue = Column(Text, nullable=False, index=True)
+        method = Column(Text, nullable=False)
+        args = Column(pg.JSONB, nullable=False)
+
+        cursor_key = Column(Text)
+
+        next_execution_time = Column(DateTime, nullable=True)
+
+        def __repr__(self):
+            return (
+                '<JobSchedule('
+                'queue="{0.queue}"'
+                ', method="{0.method}"'
+                ', rrule="{0.rrule}"'
+                ', cursor_key="{0.cursor_key}"'
+                ', is_enabled={0.is_enabled}'
+                '>'
+                .format(self)
+            )
+
+    return Model(Job, JobStates, JobCursor, JobSchedule)
