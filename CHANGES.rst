@@ -5,6 +5,10 @@ unreleased
   RRULE syntax.
   See https://github.com/mmerickel/psycopg2_mq/pull/11
 
+- Enable the workers to coordinate on a per-queue basis who is in control
+  of scheduling jobs.
+  See https://github.com/mmerickel/psycopg2_mq/pull/12
+
 0.4.5 (2020-12-22)
 ==================
 
