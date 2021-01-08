@@ -283,7 +283,7 @@ def retry_dbconn(fn):
             return fn(ctx, *args, **kwargs)
         except sa.exc.DBAPIError as ex:
             if ex.connection_invalidated and retry:
-                log.warn(
+                log.warning(
                     'connection closed unexpectedly, error="%s"',
                     str(ex).strip(),
                 )
@@ -484,7 +484,7 @@ def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
             save_cursor(db, model, job.cursor_key, cursor)
 
         elif cursor is not None:
-            log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
+            log.warning('ignoring cursor for job=%s without a cursor_key', job_id)
 
     job.state = (
         model.JobStates.COMPLETED
@@ -664,11 +664,10 @@ def lock_scheduler_queues(ctx, *, db, model, now=None):
     for s in stale_schedules:
         next_execution_time = get_next_rrule_time(
             s.rrule, s.created_time, stale_cutoff_time)
-        log.debug(
+        log.warning(
             'execution time on schedule=%s is very old (%s seconds), skipping '
             'to next time=%s',
-            s.id,
-            (now - s.next_execution_time).total_seconds(),
+            s.id, (now - s.next_execution_time).total_seconds(),
             next_execution_time,
         )
         s.next_execution_time = next_execution_time
@@ -771,7 +770,7 @@ def handle_notifies(ctx, conn):
         # we reconnect - we set the previous connection to None so that
         # rotate_dbconn doesn't invoke connection.close() on it
         if conn.closed:
-            log.warn(
+            log.warning(
                 'connection closed unexpectedly, error="%s"',
                 str(ex).strip(),
             )
