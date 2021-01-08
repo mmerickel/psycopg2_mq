@@ -234,7 +234,7 @@ class MQSource:
             schedule_id, schedule.next_execution_time,
         )
 
-    def _apply_schedule(self, schedule, *, now=None):
+    def call_schedule(self, schedule, *, now=None, reload=True):
         job_id = self.call(
             queue=schedule.queue,
             method=schedule.method,
@@ -247,4 +247,6 @@ class MQSource:
 
         schedule.next_execution_time = get_next_rrule_time(
             schedule.rrule, schedule.created_time, now)
+        if reload and schedule.next_execution_time is not None:
+            self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)
         return job_id
