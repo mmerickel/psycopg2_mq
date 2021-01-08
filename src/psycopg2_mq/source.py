@@ -196,6 +196,7 @@ class MQSource:
 
         if reload:
             self.reload_scheduler(queue, now=schedule.next_execution_time)
+
         return schedule
 
     @property
@@ -234,19 +235,26 @@ class MQSource:
             schedule_id, schedule.next_execution_time,
         )
 
-    def call_schedule(self, schedule, *, now=None, reload=True):
+    def call_schedule(self, schedule, *, now=None, reload=True, when=None):
+        if now is None:
+            now = datetime.utcnow()
+        if when is None:
+            when = now
+
         job_id = self.call(
             queue=schedule.queue,
             method=schedule.method,
             args=schedule.args,
             cursor_key=schedule.cursor_key,
             now=now,
-            when=schedule.next_execution_time,
+            when=when,
             job_kwargs=dict(schedule_id=schedule.id),
         )
 
         schedule.next_execution_time = get_next_rrule_time(
             schedule.rrule, schedule.created_time, now)
+
         if reload and schedule.next_execution_time is not None:
             self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)
+
         return job_id

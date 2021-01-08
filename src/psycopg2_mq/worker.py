@@ -721,7 +721,12 @@ def apply_schedules(ctx, *, now=None, db, model):
         .all()
     )
     for schedule in schedules:
-        mq_source.call_schedule(schedule, now=now, reload=False)
+        mq_source.call_schedule(
+            schedule,
+            now=now,
+            when=schedule.next_execution_time,
+            reload=False,
+        )
 
     if ctx._running:
         set_next_schedule_time(ctx, db=db, model=model)
