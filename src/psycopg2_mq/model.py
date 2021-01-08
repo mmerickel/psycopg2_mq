@@ -157,14 +157,13 @@ def make_default_model(metadata, JobStates=JobStates):
     class Lock(Base):
         __tablename__ = 'mq_lock'
 
-        queue = Column(Text, nullable=False)
-        key = Column(Text, nullable=False)
+        queue = Column(Text, primary_key=True)
+        key = Column(Text, primary_key=True)
 
         lock_id = Column(Integer, nullable=False)
         worker = Column(Text, nullable=False)
 
-        __table_args__ = (
-            PrimaryKeyConstraint('queue', 'key', name='pk_mq_lock_queue_key'),
-        )
+        def __repr__(self):
+            return '<Lock(queue="{0.queue}", key="{0.key}">'.format(self)
 
     return Model(Job, JobStates, JobCursor, JobSchedule, Lock)
