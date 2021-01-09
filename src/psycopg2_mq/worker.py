@@ -392,7 +392,7 @@ def release_worker_locks(ctx, *, db, model):
         .delete(synchronize_session=False)
     )
     if count > 0:
-        log.debug('released %d stale locks', count)
+        log.debug('released %d locks', count)
 
 
 @dbsession
