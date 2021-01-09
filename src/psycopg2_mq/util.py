@@ -1,6 +1,8 @@
 import builtins
 from collections.abc import Mapping
 from datetime import datetime, timedelta
+from dateutil.rrule import rrulestr
+from dateutil.tz import UTC
 
 EPOCH = datetime(1970, 1, 1)
 
@@ -94,3 +96,19 @@ class Memo:
 
     def unmemoize(self, obj):
         self._inner.pop(id(obj), None)
+
+
+def get_next_rrule_time(rrule, dtstart, after):
+    rrule = rrulestr(rrule, dtstart=dtstart)
+    try:
+        ts = rrule.after(after)
+    except Exception:
+        # we do not know if the rrule's dtstart is timezone-aware or not
+        # and dateutil doesn't allow us to provide a default of UTC and
+        # so what we do is try again with a tz-aware object
+        after = after.replace(tzinfo=UTC)
+        ts = rrule.after(after)
+
+    if ts is not None and ts.tzinfo is not None:
+        ts = ts.astimezone(UTC).replace(tzinfo=None)
+    return ts

@@ -10,6 +10,7 @@ import random
 import select
 import signal
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import table, column
 import sys
@@ -20,6 +21,7 @@ from .source import MQSource
 from .trigger import Trigger
 from .util import (
     class_name,
+    get_next_rrule_time,
     int_to_datetime,
     safe_object,
 )
@@ -71,12 +73,13 @@ class MQWorker:
         threads=1,
         capture_signals=True,
         name=None,
-        scheduler_queues=None,
     ):
         self._engine = engine
         self._queues = queues
         self._model = model
 
+        if not isinstance(timeout, timedelta):
+            timeout = timedelta(seconds=timeout)
         self._timeout = timeout
         self._jitter = jitter
         self._lock_key = lock_key
@@ -89,7 +92,9 @@ class MQWorker:
 
         self._running = False
 
+        self._connect_time = None
         self._dbconn = None
+        self._lock_id = None
         self._shutdown_trigger = None
         self._job_trigger = None
         self._next_job_time = datetime.max
@@ -97,8 +102,7 @@ class MQWorker:
         self._next_maintenance_time = datetime.min
         self._pool = None
         self._active_jobs = {}
-        self._auto_scheduler = scheduler_queues is None
-        self._scheduler_queues = set(scheduler_queues or [])
+        self._scheduler_queues = set()
 
     def shutdown_gracefully(self):
         self._running = False
@@ -108,7 +112,7 @@ class MQWorker:
     def run(self):
         self._running = True
         try:
-            log.info(f'starting mq worker={self._name}')
+            log.info('starting mq worker=%s', self._name)
             with maybe_capture_signals(self):
                 with connect_pool(self):
                     with connect_job_trigger(self):
@@ -200,6 +204,13 @@ def connect_db(ctx):
 
     finally:
         if ctx._dbconn is not None:
+            try:
+                release_worker_locks(ctx, retry=False)
+            except Exception:
+                log.warning(
+                    'failed to release locks, they will be cleaned up by '
+                    'another worker'
+                )
             ctx._dbconn.close()
             ctx._dbconn = None
 
@@ -248,14 +259,20 @@ def rotate_dbconn(ctx):
     curs = conn.connection.cursor()
     for queue in ctx._queues.keys():
         curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
+    ctx._connect_time = ctx._now()
     log.info('connected')
+
+    # clean up any locks acquired with the previous connection object
+    release_stale_locks(ctx, retry=False)
+
+    # grab an advisory lock which can track our later activity
+    acquire_worker_lock(ctx, retry=False)
 
     # if we are executing some jobs then re-lock them so they aren't lost
     recover_active_jobs(ctx, retry=False)
 
     # we lost our locks on the scheduling queues so reinitilize
-    lock_schedule_queues(ctx, retry=False)
-    set_next_schedule_time(ctx, retry=False)
+    recover_scheduler_queues(ctx, retry=False)
 
     # it's possible we missed some jobs while reconnecting so reinitialize
     set_next_job_time(ctx, retry=False)
@@ -273,7 +290,7 @@ def retry_dbconn(fn):
             return fn(ctx, *args, **kwargs)
         except sa.exc.DBAPIError as ex:
             if ex.connection_invalidated and retry:
-                log.warn(
+                log.warning(
                     'connection closed unexpectedly, error="%s"',
                     str(ex).strip(),
                 )
@@ -305,18 +322,80 @@ def dbsession(fn):
     return wrapper
 
 
-def get_lock_id(db, key, job, attempts=3):
+@dbsession
+def run_maintenance(ctx, *, db, model):
+    release_stale_locks(ctx, db=db, model=model)
+    mark_lost_jobs(ctx, db=db, model=model)
+    lock_scheduler_queues(ctx, db=db, model=model)
+    set_next_job_time(ctx, db=db, model=model)
+
+    ctx._next_maintenance_time = ctx._now() + ctx._timeout
+
+
+@dbsession
+def release_stale_locks(ctx, *, db, model):
+    Lock = model.Lock
+    lock_sq = (
+        db.query(Lock.queue, Lock.key)
+        # do not block rows that are being cleaned by another transaction
+        .with_for_update(of=Lock, skip_locked=True)
+        .outerjoin(pg_locks, sa.and_(
+            pg_locks.c.locktype == 'advisory',
+            pg_locks.c.classid == ctx._lock_key,
+            pg_locks.c.objid == Lock.lock_id,
+        ))
+        .filter(
+            Lock.queue.in_(ctx._queues.keys()),
+            Lock.lock_id != sa.null(),
+            pg_locks.c.objid == sa.null(),
+        )
+        .subquery()
+    )
+    count = (
+        db.query(Lock)
+        .filter(
+            Lock.queue == lock_sq.c.queue,
+            Lock.key == lock_sq.c.key,
+        )
+        .delete(synchronize_session=False)
+    )
+    if count > 0:
+        log.warning('released %d stale locks', count)
+
+
+@dbsession
+def release_worker_locks(ctx, *, db, model):
+    if ctx._lock_id is None:
+        return
+
+    Lock = model.Lock
+    count = (
+        db.query(Lock)
+        .filter(
+            Lock.lock_id == ctx._lock_id,
+            Lock.worker == ctx._name,
+        )
+        .delete(synchronize_session=False)
+    )
+    if count > 0:
+        log.debug('released %d locks', count)
+
+
+@dbsession
+def acquire_worker_lock(ctx, *, db, model, attempts=3):
     while attempts > 0:
         lock_id = random.randint(1, 2**31 - 1)
         is_locked = db.execute(
             'select pg_try_advisory_lock(:key, :id)',
-            {'key': key, 'id': lock_id},
+            {'key': ctx._lock_key, 'id': lock_id},
         ).scalar()
         if is_locked:
-            return lock_id
+            ctx._lock_id = lock_id
+            log.debug('acquired worker lock=%s', ctx._lock_id)
+            return
 
         attempts -= 1
-    raise RuntimeError(f'failed to get a unique lock_id for job={job.id}')
+    raise RuntimeError('failed to acquire unique worker advisory lock')
 
 
 @dbsession
@@ -370,16 +449,24 @@ def claim_pending_job(ctx, *, now=None, db, model):
             # and mutate the content until after the snapshot is committed
             job.cursor_snapshot = cursor
 
-        job.lock_id = get_lock_id(db, ctx._lock_key, job)
+        job.lock_id = ctx._lock_id
         job.state = model.JobStates.RUNNING
         job.start_time = now
         job.worker = ctx._name
 
-        log.info(
-            'beginning job=%s %.3fs after scheduled start',
-            job.id,
-            (job.start_time - job.scheduled_time).total_seconds(),
-        )
+        if job.schedule_id is not None:
+            log.info(
+                'beginning job=%s from schedule=%s %.3fs after scheduled start',
+                job.id,
+                job.schedule_id,
+                (job.start_time - job.scheduled_time).total_seconds(),
+            )
+        else:
+            log.info(
+                'beginning job=%s %.3fs after scheduled start',
+                job.id,
+                (job.start_time - job.scheduled_time).total_seconds(),
+            )
         return JobContext(
             id=job.id,
             queue=job.queue,
@@ -419,7 +506,7 @@ def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
             save_cursor(db, model, job.cursor_key, cursor)
 
         elif cursor is not None:
-            log.warn('ignoring cursor for job=%s without a cursor_key', job_id)
+            log.warning('ignoring cursor for job=%s without a cursor_key', job_id)
 
     job.state = (
         model.JobStates.COMPLETED
@@ -500,7 +587,7 @@ def recover_active_jobs(ctx, *, db, model):
     for job in job_q:
         # since the old connection is dead - the old lock is also gone,
         # we'll re-acquire a new one
-        job.lock_id = get_lock_id(db, ctx._lock_key, job)
+        job.lock_id = ctx._lock_id
         job.state = model.JobStates.RUNNING
         log.info('recovering active job=%s', job.id)
 
@@ -554,11 +641,60 @@ def finish_jobs(ctx):
 
 
 @dbsession
-def lock_schedule_queues(ctx, *, db, model):
-    if not ctx._auto_scheduler:
-        return
+def recover_scheduler_queues(ctx, *, db, model):
+    ctx._scheduler_queues = set()
+    lock_scheduler_queues(ctx, db=db, model=model)
 
-    ctx._scheduler_queues = set(ctx._queues.keys())
+
+@dbsession
+def lock_scheduler_queues(ctx, *, db, model, now=None):
+    if now is None:
+        now = ctx._now()
+
+    Lock = model.Lock
+    new_queues = set()
+    for queue in (q for q in ctx._queues if q not in ctx._scheduler_queues):
+        result = db.execute(
+            insert(Lock.__table__)
+            .values({
+                Lock.queue: queue,
+                Lock.key: 'scheduler',
+                Lock.lock_id: ctx._lock_id,
+                Lock.worker: ctx._name,
+            })
+            .on_conflict_do_nothing()
+            .returning(Lock.queue)
+        ).scalar()
+        if result is not None:
+            new_queues.add(queue)
+
+    if new_queues:
+        log.info('scheduler started for queues=%s', ','.join(sorted(new_queues)))
+    ctx._scheduler_queues.update(new_queues)
+
+    stale_cutoff_time = now - ctx._timeout
+    stale_schedules = (
+        db.query(model.JobSchedule)
+        .with_for_update()
+        .filter(
+            model.JobSchedule.queue.in_(ctx._scheduler_queues),
+            model.JobSchedule.is_enabled == sa.true(),
+            model.JobSchedule.next_execution_time < stale_cutoff_time,
+        )
+        .all()
+    )
+    for s in stale_schedules:
+        next_execution_time = get_next_rrule_time(
+            s.rrule, s.created_time, stale_cutoff_time)
+        log.warning(
+            'execution time on schedule=%s is very old (%s seconds), skipping '
+            'to next time=%s',
+            s.id, (now - s.next_execution_time).total_seconds(),
+            next_execution_time,
+        )
+        s.next_execution_time = next_execution_time
+
+    set_next_schedule_time(ctx, db=db, model=model)
 
 
 @dbsession
@@ -607,7 +743,12 @@ def apply_schedules(ctx, *, now=None, db, model):
         .all()
     )
     for schedule in schedules:
-        mq_source._apply_schedule(schedule, now=now)
+        mq_source.call_schedule(
+            schedule,
+            now=now,
+            when=schedule.next_execution_time,
+            reload=False,
+        )
 
     if ctx._running:
         set_next_schedule_time(ctx, db=db, model=model)
@@ -656,7 +797,7 @@ def handle_notifies(ctx, conn):
         # we reconnect - we set the previous connection to None so that
         # rotate_dbconn doesn't invoke connection.close() on it
         if conn.closed:
-            log.warn(
+            log.warning(
                 'connection closed unexpectedly, error="%s"',
                 str(ex).strip(),
             )
@@ -710,7 +851,7 @@ def get_next_event(ctx):
             rlist.append(ctx._shutdown_trigger)
 
     now = ctx._now()
-    timeouts = [timedelta(seconds=ctx._timeout)]
+    timeouts = [ctx._timeout]
     if ctx._running:
         timeouts.append(ctx._next_maintenance_time - now)
         timeouts.append(ctx._next_schedule_time - now)
@@ -778,10 +919,4 @@ def eventloop(ctx):
                 log.debug('tracking next schedule in %.3f seconds', when)
 
         elif event.type == ListenEventType.MAINTENANCE:
-            mark_lost_jobs(ctx)
-            lock_schedule_queues(ctx)
-            set_next_schedule_time(ctx)
-            set_next_job_time(ctx)
-            ctx._next_maintenance_time = (
-                ctx._now() + timedelta(seconds=ctx._timeout)
-            )
+            run_maintenance(ctx)

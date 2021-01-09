@@ -1,5 +1,6 @@
 import os
 
+
 class Trigger:
     def __init__(self):
         self.r, self.w = os.pipe()
