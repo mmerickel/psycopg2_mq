@@ -1,5 +1,5 @@
-unreleased
-==========
+0.5 (2021-01-09)
+================
 
 - Add a scheduler model with support for emitting periodic jobs based on
   RRULE syntax.
