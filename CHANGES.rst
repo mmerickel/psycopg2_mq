@@ -9,6 +9,9 @@ unreleased
   of scheduling jobs.
   See https://github.com/mmerickel/psycopg2_mq/pull/12
 
+- Reduce the number of advisory locks held from one per job to one per worker.
+  See https://github.com/mmerickel/psycopg2_mq/pull/12
+
 0.4.5 (2020-12-22)
 ==================
 

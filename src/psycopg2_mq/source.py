@@ -34,6 +34,10 @@ class MQSource:
         job_kwargs=None,
         conflict_resolver=None,
     ):
+        """
+        Dispatch a new job.
+
+        """
         if now is None:
             now = datetime.utcnow()
         if when is None:
@@ -138,6 +142,13 @@ class MQSource:
         return self.query_job.get(job_id)
 
     def retry_job(self, job_id):
+        """
+        Retry a job.
+
+        This dispatches a new job, copying the metadata from a job that was
+        failed or lost.
+
+        """
         job = self.find_job(job_id)
         if job is None or job.state not in {
             self.model.JobStates.FAILED,
@@ -151,6 +162,14 @@ class MQSource:
         )
 
     def reload_scheduler(self, queue, *, now=None):
+        """
+        Trigger the scheduler to reload information about modified schedules.
+
+        For example, this should be used if ``reload=False`` is used with
+        :ref:`.add_schedule`, :ref:`.disable_schedule`, or
+        :ref:`.enable_schedule` in order to batch changes prior to reloading.
+
+        """
         if now is None:
             now = datetime.utcnow()
         epoch_seconds = datetime_to_int(now)
@@ -172,6 +191,10 @@ class MQSource:
         now=None,
         reload=True,
     ):
+        """
+        Add a new schedule record to dispatch jobs at a specified frequency.
+
+        """
         if now is None:
             now = datetime.utcnow()
         if args is None:
@@ -210,6 +233,11 @@ class MQSource:
         return q.one()
 
     def disable_schedule(self, schedule_id):
+        """
+        Disable a schedule preventing any further jobs from being automatically
+        dispatched.
+
+        """
         schedule = self.get_schedule(schedule_id, for_update=True)
         if not schedule.is_enabled:
             log.info('schedule=%s is already disabled', schedule_id)
@@ -219,6 +247,7 @@ class MQSource:
         log.debug('disabled schedule=%s', schedule_id)
 
     def enable_schedule(self, schedule_id, *, now=None, reload=True):
+        """ Enable a schedule for execution at its next scheduled time."""
         if now is None:
             now = datetime.utcnow()
         schedule = self.get_schedule(schedule_id, for_update=True)
@@ -236,6 +265,13 @@ class MQSource:
         )
 
     def call_schedule(self, schedule, *, now=None, reload=True, when=None):
+        """
+        Manually invoke a schedule, dispatching a job immediately.
+
+        This is useful when a job may have been skipped because no schedulers
+        were active at the time it was due to execute.
+
+        """
         if now is None:
             now = datetime.utcnow()
         if when is None:

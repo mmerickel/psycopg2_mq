@@ -60,15 +60,29 @@ and is saved back to the database when the job is completed. This effectively
 gives jobs some persistent, shared state, and serializes all jobs over a given
 cursor.
 
-Scheduled Jobs
---------------
+Delayed Jobs
+------------
 
-A ``Job`` can be scheduled in the future by providing a ``datetime`` object
-to the ``when`` argument. This, along with a cursor key, can provide a nice
-throttle on how frequently a job runs. For example, schedule jobs to run in
-30 seconds with a ``cursor_key`` and any jobs that are scheduled in the
+A ``Job`` can be delayed to run in the future by providing a ``datetime``
+object to the ``when`` argument. This, along with a cursor key, can provide a
+nice throttle on how frequently a job runs. For example, delay jobs to run
+in 30 seconds with a ``cursor_key`` and any jobs that are scheduled in the
 meantime will be dropped. The assumption here is that the arguments are
-constant and data to continue execute is in the cursor or another table.
+constant and data for execution is in the cursor or another table. As a last
+resort, a ``conflict_resolver`` callback can be used to modify properties of
+the job when arguments cannot be constant.
+
+Schedules
+---------
+
+A ``JobSchedule`` can be defined which supports
+`RFC 5545<https://tools.ietf.org/html/rfc5545>`__ ``RRULE`` schedules. These are
+powerful and can support timezones, frequencies based on calendars as well
+as simple recurring rules from an anchor time using ``DTSTART``. Cron jobs
+can be converted to this syntax for simpler scenarios.
+
+``psycopg2-mq`` workers will automatically negotiate which worker is responsible
+for managing schedules so clustered workers should operate as expected.
 
 Example Worker
 ==============
