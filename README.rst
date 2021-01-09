@@ -76,8 +76,8 @@ Schedules
 ---------
 
 A ``JobSchedule`` can be defined which supports
-`RFC 5545<https://tools.ietf.org/html/rfc5545>`__ ``RRULE`` schedules. These are
-powerful and can support timezones, frequencies based on calendars as well
+`RFC 5545 <https://tools.ietf.org/html/rfc5545>`__ ``RRULE`` schedules. These
+are powerful and can support timezones, frequencies based on calendars as well
 as simple recurring rules from an anchor time using ``DTSTART``. Cron jobs
 can be converted to this syntax for simpler scenarios.
 
