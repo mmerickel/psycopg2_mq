@@ -1,3 +1,8 @@
+0.5.1 (2021-01-09)
+==================
+
+- Drop the ``UNIQUE`` constraint on the background job ``lock_id`` column.
+
 0.5 (2021-01-09)
 ================
 

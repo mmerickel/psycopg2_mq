@@ -71,7 +71,7 @@ def make_default_model(metadata, JobStates=JobStates):
         cursor_key = Column(Text)
         cursor_snapshot = Column(pg.JSONB)
 
-        lock_id = Column(Integer, unique=True)
+        lock_id = Column(Integer)
         worker = Column(Text)
 
         __table_args__ = (

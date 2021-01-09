@@ -21,7 +21,7 @@ tests_require = [
 
 setup(
     name='psycopg2_mq',
-    version='0.5',
+    version='0.5.1',
     description='A message queue written around PostgreSQL.',
     long_description=readme + '\n\n' + changes,
     author='Michael Merickel',
