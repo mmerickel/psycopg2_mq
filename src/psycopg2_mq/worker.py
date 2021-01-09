@@ -322,20 +322,6 @@ def dbsession(fn):
     return wrapper
 
 
-def get_lock_id(db, key, attempts=3):
-    while attempts > 0:
-        lock_id = random.randint(1, 2**31 - 1)
-        is_locked = db.execute(
-            'select pg_try_advisory_lock(:key, :id)',
-            {'key': key, 'id': lock_id},
-        ).scalar()
-        if is_locked:
-            return lock_id
-
-        attempts -= 1
-    raise RuntimeError('failed to get a unique lock_id')
-
-
 @dbsession
 def run_maintenance(ctx, *, db, model):
     release_stale_locks(ctx, db=db, model=model)
@@ -396,9 +382,20 @@ def release_worker_locks(ctx, *, db, model):
 
 
 @dbsession
-def acquire_worker_lock(ctx, *, db, model):
-    ctx._lock_id = get_lock_id(db, ctx._lock_key)
-    log.debug('acquired worker lock=%s', ctx._lock_id)
+def acquire_worker_lock(ctx, *, db, model, attempts=3):
+    while attempts > 0:
+        lock_id = random.randint(1, 2**31 - 1)
+        is_locked = db.execute(
+            'select pg_try_advisory_lock(:key, :id)',
+            {'key': ctx._lock_key, 'id': lock_id},
+        ).scalar()
+        if is_locked:
+            ctx._lock_id = lock_id
+            log.debug('acquired worker lock=%s', ctx._lock_id)
+            return
+
+        attempts -= 1
+    raise RuntimeError('failed to acquire unique worker advisory lock')
 
 
 @dbsession
@@ -452,7 +449,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
             # and mutate the content until after the snapshot is committed
             job.cursor_snapshot = cursor
 
-        job.lock_id = get_lock_id(db, ctx._lock_key)
+        job.lock_id = ctx._lock_id
         job.state = model.JobStates.RUNNING
         job.start_time = now
         job.worker = ctx._name
@@ -590,7 +587,7 @@ def recover_active_jobs(ctx, *, db, model):
     for job in job_q:
         # since the old connection is dead - the old lock is also gone,
         # we'll re-acquire a new one
-        job.lock_id = get_lock_id(db, ctx._lock_key)
+        job.lock_id = ctx._lock_id
         job.state = model.JobStates.RUNNING
         log.info('recovering active job=%s', job.id)
 
