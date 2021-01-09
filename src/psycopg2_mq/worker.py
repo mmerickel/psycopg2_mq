@@ -204,6 +204,13 @@ def connect_db(ctx):
 
     finally:
         if ctx._dbconn is not None:
+            try:
+                release_worker_locks(ctx, retry=False)
+            except Exception:
+                log.warning(
+                    'failed to release locks, they will be cleaned up by '
+                    'another worker'
+                )
             ctx._dbconn.close()
             ctx._dbconn = None
 
@@ -367,7 +374,25 @@ def release_stale_locks(ctx, *, db, model):
         .delete(synchronize_session=False)
     )
     if count > 0:
-        log.info('released %d stale locks', count)
+        log.warning('released %d stale locks', count)
+
+
+@dbsession
+def release_worker_locks(ctx, *, db, model):
+    if ctx._lock_id is None:
+        return
+
+    Lock = model.Lock
+    count = (
+        db.query(Lock)
+        .filter(
+            Lock.lock_id == ctx._lock_id,
+            Lock.worker == ctx._name,
+        )
+        .delete(synchronize_session=False)
+    )
+    if count > 0:
+        log.debug('released %d stale locks', count)
 
 
 @dbsession
