@@ -1,3 +1,8 @@
+0.5.3 (2021-01-11)
+==================
+
+- Copy the ``schedule_id`` information to retried jobs.
+
 0.5.2 (2021-01-11)
 ==================
 

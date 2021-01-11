@@ -33,6 +33,7 @@ class MQSource:
         cursor_key=None,
         job_kwargs=None,
         conflict_resolver=None,
+        schedule_id=None,
     ):
         """
         Dispatch a new job.
@@ -49,8 +50,6 @@ class MQSource:
 
         Job = self.model.Job
         JobStates = self.model.JobStates
-
-        schedule_id = job_kwargs.get('schedule_id')
 
         job_id = None
         notify = False
@@ -69,6 +68,7 @@ class MQSource:
                     Job.scheduled_time: when,
                     Job.state: JobStates.PENDING,
                     Job.cursor_key: cursor_key,
+                    Job.schedule_id: schedule_id,
                     **job_kwargs,
                 })
                 .on_conflict_do_nothing(
@@ -159,6 +159,7 @@ class MQSource:
             job.queue, job.method, job.args,
             when=job.scheduled_time,
             cursor_key=job.cursor_key,
+            schedule_id=job.schedule_id,
         )
 
     def reload_scheduler(self, queue, *, now=None):
@@ -285,7 +286,7 @@ class MQSource:
             cursor_key=schedule.cursor_key,
             now=now,
             when=when,
-            job_kwargs=dict(schedule_id=schedule.id),
+            schedule_id=schedule.id,
         )
 
         if schedule.is_enabled:
