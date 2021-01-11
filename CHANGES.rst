@@ -1,3 +1,8 @@
+0.5.2 (2021-01-11)
+==================
+
+- [breaking] Require ``call_schedule`` to accept an id instead of an object.
+
 0.5.1 (2021-01-09)
 ==================
 

@@ -744,7 +744,7 @@ def apply_schedules(ctx, *, now=None, db, model):
     )
     for schedule in schedules:
         mq_source.call_schedule(
-            schedule,
+            schedule.id,
             now=now,
             when=schedule.next_execution_time,
             reload=False,

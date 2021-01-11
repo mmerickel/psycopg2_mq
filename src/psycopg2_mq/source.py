@@ -264,7 +264,7 @@ class MQSource:
             schedule_id, schedule.next_execution_time,
         )
 
-    def call_schedule(self, schedule, *, now=None, reload=True, when=None):
+    def call_schedule(self, schedule_id, *, now=None, reload=True, when=None):
         """
         Manually invoke a schedule, dispatching a job immediately.
 
@@ -277,6 +277,7 @@ class MQSource:
         if when is None:
             when = now
 
+        schedule = self.get_schedule(schedule_id, for_update=True)
         job_id = self.call(
             queue=schedule.queue,
             method=schedule.method,
@@ -287,10 +288,11 @@ class MQSource:
             job_kwargs=dict(schedule_id=schedule.id),
         )
 
-        schedule.next_execution_time = get_next_rrule_time(
-            schedule.rrule, schedule.created_time, now)
+        if schedule.is_enabled:
+            schedule.next_execution_time = get_next_rrule_time(
+                schedule.rrule, schedule.created_time, now)
 
-        if reload and schedule.next_execution_time is not None:
-            self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)
+            if reload and schedule.next_execution_time is not None:
+                self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)
 
         return job_id
