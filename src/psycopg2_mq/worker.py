@@ -570,7 +570,8 @@ def mark_lost_jobs(ctx, *, db, model):
     for job in job_q:
         job.state = model.JobStates.LOST
         job.lock_id = None
-        log.info('marking job=%s as lost', job.id)
+        job.end_time = ctx._now()
+        log.error('marking job=%s as lost', job.id)
 
 
 @dbsession

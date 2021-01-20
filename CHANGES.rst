@@ -1,3 +1,8 @@
+0.5.4 (2021-01-20)
+==================
+
+- Log at the error level when marking a job as lost.
+
 0.5.3 (2021-01-11)
 ==================
 
