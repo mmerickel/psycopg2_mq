@@ -518,14 +518,6 @@ def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
 
     lock_id = job.lock_id
     job.lock_id = None
-
-    db.flush()
-
-    db.execute(
-        'select pg_advisory_unlock(:key, :id)',
-        {'key': ctx._lock_key, 'id': lock_id},
-    )
-
     log.info('finished processing job=%s, state="%s"', job_id, job.state)
 
 

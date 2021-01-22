@@ -1,3 +1,9 @@
+0.5.5 (2021-01-22)
+==================
+
+- Fixed some old code causing the worker lock to release after a job
+  completed.
+
 0.5.4 (2021-01-20)
 ==================
 
