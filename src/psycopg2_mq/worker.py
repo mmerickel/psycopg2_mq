@@ -515,8 +515,6 @@ def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
     )
     job.result = result
     job.end_time = ctx._now()
-
-    lock_id = job.lock_id
     job.lock_id = None
     log.info('finished processing job=%s, state="%s"', job_id, job.state)
 
