@@ -1,3 +1,13 @@
+0.5.6 (2021-02-28)
+==================
+
+- Some UnicodeDecodeError exceptions raised from jobs could trigger a
+  serialization failure (UntranslatableCharacter) because it would contain
+  the sequence ``\u0000``` which, while valid in Python, is not allowed
+  in postgres. So when dealing with the raw bytes, we'll decode it with
+  the replacement character that can be properly stored. Not ideal, but
+  better than failing to store the error at all.
+
 0.5.5 (2021-01-22)
 ==================
 
