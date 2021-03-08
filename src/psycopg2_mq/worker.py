@@ -44,13 +44,24 @@ pg_locks = table(
 
 
 class JobContext:
-    def __init__(self, *, id, queue, method, args, cursor_key=None, cursor=None):
+    def __init__(
+        self,
+        *,
+        id,
+        queue,
+        method,
+        args,
+        cursor_key=None,
+        cursor=None,
+        schedule_id=None,
+    ):
         self.id = id
         self.queue = queue
         self.method = method
         self.args = args
         self.cursor_key = cursor_key
         self.cursor = cursor
+        self.schedule_id = schedule_id
 
     def extend(self, **kw):
         for k, v in kw.items():
@@ -474,6 +485,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
             args=job.args,
             cursor_key=job.cursor_key,
             cursor=cursor,
+            schedule_id=job.schedule_id,
         )
 
 
