@@ -1,3 +1,9 @@
+0.5.7 (2021-03-07)
+==================
+
+- Add a ``schedule_id`` attribute to the job context for use in jobs that want
+  to know whether they were executed from a schedule or not.
+
 0.5.6 (2021-02-28)
 ==================
 
