@@ -1,3 +1,8 @@
+0.6.1 (2022-01-15)
+==================
+
+- Fix a bug introduced in the 0.6.0 release when scheduling new jobs.
+
 0.6.0 (2022-01-14)
 ==================
 
