@@ -90,7 +90,7 @@ class MQSource:
                 })
                 .on_conflict_do_nothing(
                     index_elements=[Job.cursor_key, Job.queue, Job.method],
-                    index_where=(
+                    index_where=sa.and_(
                         Job.state == JobStates.PENDING,
                         Job.collapsible == sa.true(),
                     ),
