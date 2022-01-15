@@ -34,9 +34,23 @@ class MQSource:
         job_kwargs=None,
         conflict_resolver=None,
         schedule_id=None,
+        collapse_on_cursor=True,
     ):
         """
         Dispatch a new job.
+
+        :param conflict_resolver:
+            A callable that accepts the old job as its only argument. This will
+            be invoked if ``collapse_on_cursor`` is ``True`` and a job already
+            exists. The callable can modify the job object prior to returning
+            to update any arguments prior to it running.
+
+        :param collapse_on_cursor:
+            If set to ``False``, then new jobs will always be created.
+            When ``True`` and there is already a job on this cursor in the
+            pending state with the same queue/method and marked collapsible then
+            the ``conflict_resolver`` will be invoked with the existing job and
+            the new request will be collapsed into the previous pending job.
 
         """
         if now is None:
@@ -50,6 +64,8 @@ class MQSource:
 
         Job = self.model.Job
         JobStates = self.model.JobStates
+
+        collapsible = cursor_key is not None and collapse_on_cursor
 
         job_id = None
         notify = False
@@ -69,11 +85,15 @@ class MQSource:
                     Job.state: JobStates.PENDING,
                     Job.cursor_key: cursor_key,
                     Job.schedule_id: schedule_id,
+                    Job.collapsible: collapsible,
                     **job_kwargs,
                 })
                 .on_conflict_do_nothing(
-                    index_elements=[Job.cursor_key],
-                    index_where=(Job.state == JobStates.PENDING),
+                    index_elements=[Job.cursor_key, Job.queue, Job.method],
+                    index_where=(
+                        Job.state == JobStates.PENDING,
+                        Job.collapsible == sa.true(),
+                    ),
                 )
                 .returning(Job.id)
             ).scalar()
@@ -98,7 +118,10 @@ class MQSource:
                 .with_for_update()
                 .filter(
                     Job.state == JobStates.PENDING,
+                    Job.queue == queue,
+                    Job.method == method,
                     Job.cursor_key == cursor_key,
+                    Job.collapsible == sa.true(),
                 )
                 .first()
             )
@@ -151,10 +174,11 @@ class MQSource:
         """
         job = self.find_job(job_id)
         if job is None or job.state not in {
+            self.model.JobStates.COMPLETED,
             self.model.JobStates.FAILED,
             self.model.JobStates.LOST,
         }:
-            raise RuntimeError('job is not finished, cannot retry')
+            raise RuntimeError('job is not in a retryable state')
         return self.call(
             job.queue, job.method, job.args,
             when=job.scheduled_time,

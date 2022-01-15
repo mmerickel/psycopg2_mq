@@ -1,3 +1,16 @@
+0.6.0 (2022-01-14)
+==================
+
+- [breaking] Add model changes to mark jobs as collapsible.
+
+- [breaking] Add model changes to the cursor index.
+
+- Allow multiple pending jobs to be scheduled on the same cursor if either:
+
+  1. The queue or method are different from existing pending jobs on the cursor.
+
+  2. ``collapse_on_cursor`` is set to ``False`` when scheduling the job.
+
 0.5.7 (2021-03-07)
 ==================
 

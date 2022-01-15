@@ -70,6 +70,7 @@ def make_default_model(metadata, JobStates=JobStates):
 
         cursor_key = Column(Text)
         cursor_snapshot = Column(pg.JSONB)
+        collapsible = Column(Boolean)
 
         lock_id = Column(Integer)
         worker = Column(Text)
@@ -83,10 +84,12 @@ def make_default_model(metadata, JobStates=JobStates):
                 name='ck_mq_job_lock_id',
             ),
             Index(
-                'uq_mq_job_pending_cursor_key',
-                cursor_key,
-                postgresql_where=state == JobStates.PENDING,
-                unique=True,
+                'uq_mq_job_pending_cursor_key_queue_method',
+                cursor_key, queue, method,
+                postgresql_where=sa.and_(
+                    state == JobStates.PENDING,
+                    collapsible == sa.true(),
+                ),
             ),
             Index(
                 'uq_mq_job_running_cursor_key',
