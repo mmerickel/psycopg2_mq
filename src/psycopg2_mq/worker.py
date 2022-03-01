@@ -884,14 +884,14 @@ def get_next_event(ctx):
         return handle_notifies(ctx, conn)
 
     now = ctx._now()
+    if ctx._next_maintenance_time <= now:
+        return MAINTENANCE_EVENT
+
     if ctx._next_schedule_time <= now:
         return SCHEDULE_READY_EVENT
 
     if ctx._next_job_time <= now and len(ctx._active_jobs) < ctx._threads:
         return JOB_READY_EVENT
-
-    if ctx._next_maintenance_time <= now:
-        return MAINTENANCE_EVENT
 
     return CONTINUE_EVENT
 

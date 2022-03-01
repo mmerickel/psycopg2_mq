@@ -1,3 +1,14 @@
+unreleased
+==========
+
+- Prioritize maintenance work higher than running new jobs.
+  There was a chicken-and-egg issue where a job would be marked running
+  but needs to be marked lost. However marking it lost is lower priority than
+  trying to start new jobs. In the case where a lot of jobs were scheduled
+  at the same time, the worker always tried to start new jobs and didn't
+  run the maintenance so the job never got marked lost, effectively blocking
+  the queue.
+
 0.6.1 (2022-01-15)
 ==================
 
