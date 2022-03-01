@@ -1,5 +1,5 @@
-unreleased
-==========
+0.6.2 (2022-03-01)
+==================
 
 - Prioritize maintenance work higher than running new jobs.
   There was a chicken-and-egg issue where a job would be marked running
