@@ -1,3 +1,16 @@
+unreleased
+==========
+
+- Fix a corner case with lost jobs attached to cursors. In scenarios where
+  multiple workers are running, if one loses a database connection then the
+  other is designed to notice and mark jobs lost. However, it's possible the
+  job is not actually lost and the worker can then recover after resuming
+  its connection, and marking the job running again. In this situation, we
+  do not want another job to begin on the same cursor. To fix this issue,
+  new jobs will not be run if another job is marked lost on the same cursor.
+  You will be required to recover the job by marking it as not lost (probably
+  failed) first to unblock the rest of the jobs on the cursor.
+
 0.6.2 (2022-03-01)
 ==================
 

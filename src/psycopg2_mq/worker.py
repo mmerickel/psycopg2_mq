@@ -417,7 +417,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
     running_cursor_sq = (
         db.query(model.Job.cursor_key)
         .filter(
-            model.Job.state == model.JobStates.RUNNING,
+            model.Job.state.in_([model.JobStates.RUNNING, model.JobStates.LOST]),
             model.Job.cursor_key.isnot(None),
         )
         .subquery()
@@ -569,11 +569,31 @@ def mark_lost_jobs(ctx, *, db, model):
         )
         .order_by(model.Job.start_time.asc())
     )
+    lost_job_ids = set()
     for job in job_q:
         job.state = model.JobStates.LOST
         job.lock_id = None
         job.end_time = ctx._now()
         log.error('marking job=%s as lost', job.id)
+        lost_job_ids.add(job.id)
+
+    job_q = (
+        db.query(model.Job)
+        .filter(
+            model.Job.state == model.JobStates.LOST,
+            model.Job.cursor_key.isnot(None),
+        )
+    )
+    for job in job_q:
+        # avoid warning about jobs that were just marked lost
+        if job.id in lost_job_ids:
+            continue
+        log.warning(
+            'job=%s is lost and blocking execution of cursor=%s for %d seconds',
+            job.id,
+            job.cursor_key,
+            (ctx._now() - job.end_time).total_seconds(),
+        )
 
 
 @dbsession
@@ -597,11 +617,24 @@ def recover_active_jobs(ctx, *, db, model):
 
 @dbsession
 def set_next_job_time(ctx, *, db, model):
+    running_cursor_sq = (
+        db.query(model.Job.cursor_key)
+        .filter(
+            model.Job.state.in_([model.JobStates.RUNNING, model.JobStates.LOST]),
+            model.Job.cursor_key.isnot(None),
+        )
+        .subquery()
+    )
     ctx._next_job_time = (
         db.query(sa.func.min(model.Job.scheduled_time))
+        .outerjoin(
+            running_cursor_sq,
+            running_cursor_sq.c.cursor_key == model.Job.cursor_key,
+        )
         .filter(
             model.Job.state == model.JobStates.PENDING,
             model.Job.queue.in_(ctx._queues.keys()),
+            running_cursor_sq.c.cursor_key.is_(None),
         )
         .scalar()
     )
