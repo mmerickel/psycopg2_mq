@@ -1,5 +1,5 @@
-unreleased
-==========
+0.7.0 (2022-03-03)
+==================
 
 - Fix a corner case with lost jobs attached to cursors. In scenarios where
   multiple workers are running, if one loses a database connection then the
