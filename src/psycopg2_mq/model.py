@@ -117,6 +117,10 @@ def make_default_model(metadata, JobStates=JobStates):
         key = Column(Text, primary_key=True)
         properties = Column(pg.JSONB, default=dict, nullable=False)
 
+        update_job_id = Column(
+            ForeignKey('mq_job.id', ondelete='set null', onupdate='cascade'),
+        )
+
         def __repr__(self):
             return '<JobCursor(key="{0.key}")>'.format(self)
 

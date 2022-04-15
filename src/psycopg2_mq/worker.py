@@ -527,7 +527,7 @@ def finish_job(ctx, job_id, success, result, cursor, *, db, model):
 
     if cursor is not None:
         if job.cursor_key is not None:
-            save_cursor(db, model, job.cursor_key, cursor)
+            save_cursor(db, model, job.cursor_key, cursor, job.id)
 
         elif cursor is not None:
             log.warning('ignoring cursor for job=%s without a cursor_key', job_id)
@@ -543,7 +543,7 @@ def finish_job(ctx, job_id, success, result, cursor, *, db, model):
     log.info('finished processing job=%s, state="%s"', job_id, job.state)
 
 
-def save_cursor(db, model, key, cursor):
+def save_cursor(db, model, key, cursor, job_id=None):
     if cursor is None:
         cursor = {}
     cursor_obj = (
@@ -556,11 +556,13 @@ def save_cursor(db, model, key, cursor):
         cursor_obj = model.JobCursor(
             key=key,
             properties=cursor,
+            update_job_id=job_id,
         )
         db.add(cursor_obj)
 
     elif cursor_obj.properties != cursor:
         cursor_obj.properties = cursor
+        cursor_obj.update_job_id = job_id
 
 
 @dbsession
