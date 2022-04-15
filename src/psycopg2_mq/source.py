@@ -146,9 +146,9 @@ class MQSource:
         if notify:
             epoch_seconds = datetime_to_int(when)
             payload = json.dumps({'j': job_id, 't': epoch_seconds})
-            self.dbsession.execute(sa.select([
+            self.dbsession.execute(sa.select(
                 sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
-            ]))
+            ))
             # XXX notify is always true when the raw insert works above so we
             # handle the two scenarios (notify and raw insert) in which
             # mark_changed needs to be called with only a single call
@@ -199,9 +199,9 @@ class MQSource:
             now = datetime.utcnow()
         epoch_seconds = datetime_to_int(now)
         payload = json.dumps({'s': None, 't': epoch_seconds})
-        self.dbsession.execute(sa.select([
+        self.dbsession.execute(sa.select(
             sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
-        ]))
+        ))
 
     def add_schedule(
         self,

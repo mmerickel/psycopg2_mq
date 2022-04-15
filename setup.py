@@ -9,7 +9,7 @@ changes = readfile('CHANGES.rst')
 
 requires = [
     'python-dateutil',
-    'SQLAlchemy',
+    'SQLAlchemy > 1.4',
     'transaction',
     'zope.sqlalchemy',
 ]

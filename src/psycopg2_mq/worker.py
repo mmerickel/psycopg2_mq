@@ -406,7 +406,7 @@ def acquire_worker_lock(ctx, *, db, model, attempts=3):
     while attempts > 0:
         lock_id = random.randint(1, 2**31 - 1)
         is_locked = db.execute(
-            'select pg_try_advisory_lock(:key, :id)',
+            sa.text('select pg_try_advisory_lock(:key, :id)'),
             {'key': ctx._lock_key, 'id': lock_id},
         ).scalar()
         if is_locked:

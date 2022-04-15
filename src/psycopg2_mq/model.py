@@ -66,7 +66,7 @@ def make_default_model(metadata, JobStates=JobStates):
             ForeignKey('mq_job_schedule.id', ondelete='cascade', onupdate='cascade'),
             index=True,
         )
-        schedule = relationship('JobSchedule', backref='jobs')
+        schedule = relationship(lambda: JobSchedule, back_populates='jobs')
 
         cursor_key = Column(Text)
         cursor_snapshot = Column(pg.JSONB)
@@ -138,6 +138,8 @@ def make_default_model(metadata, JobStates=JobStates):
         cursor_key = Column(Text)
 
         next_execution_time = Column(DateTime, nullable=True)
+
+        jobs = relationship(lambda: Job, back_populates='schedule')
 
         def __repr__(self):
             return (
