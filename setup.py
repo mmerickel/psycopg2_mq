@@ -30,7 +30,7 @@ setup(
     packages=find_packages('src', exclude=['tests']),
     package_dir={'': 'src'},
     include_package_data=True,
-    python_requires='>=3.6',
+    python_requires='>=3.7',
     install_requires=requires,
     extras_require={
         'testing': tests_require,
@@ -48,7 +48,6 @@ setup(
         'License :: OSI Approved :: MIT License',
         'Natural Language :: English',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
