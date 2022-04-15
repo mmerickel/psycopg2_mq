@@ -1,3 +1,8 @@
+0.8.1 (2022-04-15)
+==================
+
+- Ensure the ``trace`` attribute is populated on the ``JobContext``.
+
 0.8.0 (2022-04-15)
 ==================
 

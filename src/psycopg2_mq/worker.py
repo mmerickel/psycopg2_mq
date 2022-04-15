@@ -497,6 +497,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
             cursor_key=job.cursor_key,
             cursor=cursor,
             schedule_id=job.schedule_id,
+            trace=job.trace,
         )
 
 
