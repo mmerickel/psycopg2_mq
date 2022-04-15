@@ -1,3 +1,22 @@
+0.8.0 (2022-04-15)
+==================
+
+- [breaking] Add ``update_job_id`` foreign key to the ``JobCursor`` model to
+  make it possible to know which job last updated the value in the cursor.
+
+- [breaking] Add ``trace`` json blob to the ``Job`` model.
+
+- Support a ``trace`` json blob when creating new jobs. This value is available
+  on the running job context and can be used when creating sub-jobs or when
+  making requests to external systems to pass through tracing metadata.
+
+  See ``MQSource.call``'s new ``trace`` parameter when creating jobs.
+  See ``JobContext.trace`` attribute when handling jobs.
+
+- Add a standard ``FailedJobError`` exception which can be raised by jobs to
+  mark a failure with a custom result object. This is different from unhandled
+  exceptions that cause the ``MQWorker.result_from_error`` method to be invoked.
+
 0.7.0 (2022-03-03)
 ==================
 
