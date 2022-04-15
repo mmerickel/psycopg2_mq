@@ -72,6 +72,8 @@ def make_default_model(metadata, JobStates=JobStates):
         cursor_snapshot = Column(pg.JSONB)
         collapsible = Column(Boolean)
 
+        trace = Column(pg.JSONB)
+
         lock_id = Column(Integer)
         worker = Column(Text)
 

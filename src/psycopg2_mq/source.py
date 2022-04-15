@@ -35,6 +35,7 @@ class MQSource:
         conflict_resolver=None,
         schedule_id=None,
         collapse_on_cursor=True,
+        trace=None,
     ):
         """
         Dispatch a new job.
@@ -86,6 +87,7 @@ class MQSource:
                     Job.cursor_key: cursor_key,
                     Job.schedule_id: schedule_id,
                     Job.collapsible: collapsible,
+                    Job.trace: trace,
                     **job_kwargs,
                 })
                 .on_conflict_do_nothing(

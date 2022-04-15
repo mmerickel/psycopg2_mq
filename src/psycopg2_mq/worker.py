@@ -54,6 +54,7 @@ class JobContext:
         cursor_key=None,
         cursor=None,
         schedule_id=None,
+        trace=None,
     ):
         self.id = id
         self.queue = queue
@@ -62,6 +63,7 @@ class JobContext:
         self.cursor_key = cursor_key
         self.cursor = cursor
         self.schedule_id = schedule_id
+        self.trace = trace
 
     def extend(self, **kw):
         for k, v in kw.items():
