@@ -152,18 +152,6 @@ class MQWorker:
             'tb': traceback.format_tb(ex.__traceback__),
         }
 
-    def make_job_context(self, job):
-        return JobContext(
-            id=job.id,
-            queue=job.queue,
-            method=job.method,
-            args=job.args,
-            cursor_key=job.cursor_key,
-            cursor=cursor,
-            schedule_id=job.schedule_id,
-            trace=job.trace,
-        )
-
     def get_status(self):
         # shallow copy to avoid iterating a shared reference
         active_jobs = self._active_jobs.copy()
@@ -501,7 +489,16 @@ def claim_pending_job(ctx, *, now=None, db, model):
                 job.id,
                 (job.start_time - job.scheduled_time).total_seconds(),
             )
-        return ctx.make_job_context(job)
+        return JobContext(
+            id=job.id,
+            queue=job.queue,
+            method=job.method,
+            args=job.args,
+            cursor_key=job.cursor_key,
+            cursor=cursor,
+            schedule_id=job.schedule_id,
+            trace=job.trace,
+        )
 
 
 def execute_job(queue, job):
