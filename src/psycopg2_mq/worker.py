@@ -68,6 +68,15 @@ class JobContext:
             setattr(self, k, v)
 
 
+class FailedJobError(Exception):
+    message = 'Job execution manually aborted.'
+
+    def __init__(self, result, should_update_cursor=False):
+        super().__init__(self.message)
+        self.result = result
+        self.should_update_cursor = should_update_cursor
+
+
 class MQWorker:
     _now = datetime.utcnow  # for testing
 
@@ -496,6 +505,9 @@ def execute_job(queue, job):
         current_thread.name = f'{old_thread_name},job={job.id}'
         return queue.execute_job(job)
 
+    except FailedJobError:
+        raise
+
     except BaseException:
         log.exception('error while handling job=%s', job.id)
         raise
@@ -505,7 +517,7 @@ def execute_job(queue, job):
 
 
 @dbsession
-def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
+def finish_job(ctx, job_id, success, result, cursor, *, db, model):
     job = (
         db.query(model.Job)
         .with_for_update()
@@ -513,7 +525,7 @@ def finish_job(ctx, job_id, success, result, cursor=None, *, db, model):
         .one()
     )
 
-    if success:
+    if cursor is not None:
         if job.cursor_key is not None:
             save_cursor(db, model, job.cursor_key, cursor)
 
@@ -669,7 +681,17 @@ def finish_jobs(ctx):
         job = ctx._active_jobs.pop(future)
         error = future.exception()
         if error is not None:
-            finish_job(ctx, job.id, False, ctx.result_from_error(error))
+            if isinstance(error, FailedJobError):
+                finish_job(
+                    ctx,
+                    job.id,
+                    False,
+                    error.result,
+                    job.cursor if error.should_update_cursor else None,
+                )
+
+            else:
+                finish_job(ctx, job.id, False, ctx.result_from_error(error), None)
 
         else:
             result = future.result()
