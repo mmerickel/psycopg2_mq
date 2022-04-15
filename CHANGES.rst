@@ -1,6 +1,11 @@
 0.8.2 (2022-04-15)
 ==================
 
+- Drop Python 3.6 support.
+
+- [breaking] Require SQLAlchemy 1.4+ and resolve deprecation warnings related to
+  SQLAlchemy 2.0.
+
 - [breaking] Rename ``update_job_id`` to ``updated_job_id`` in the
   ``JobCursor`` model.
 
