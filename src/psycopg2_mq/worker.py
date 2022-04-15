@@ -562,13 +562,13 @@ def save_cursor(db, model, key, cursor, job_id=None):
         cursor_obj = model.JobCursor(
             key=key,
             properties=cursor,
-            update_job_id=job_id,
+            updated_job_id=job_id,
         )
         db.add(cursor_obj)
 
     elif cursor_obj.properties != cursor:
         cursor_obj.properties = cursor
-        cursor_obj.update_job_id = job_id
+        cursor_obj.updated_job_id = job_id
 
 
 @dbsession

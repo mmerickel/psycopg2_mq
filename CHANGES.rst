@@ -1,3 +1,9 @@
+0.8.2 (2022-04-15)
+==================
+
+- [breaking] Rename ``update_job_id`` to ``updated_job_id`` in the
+  ``JobCursor`` model.
+
 0.8.1 (2022-04-15)
 ==================
 
