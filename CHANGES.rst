@@ -3,6 +3,9 @@
 
 - Ensure the ``trace`` attribute is populated on the ``JobContext``.
 
+- Add ``MQWorker.make_job_context`` which can be defined to completely override
+  the ``JobContext`` factory using the ``Job`` object and open database session.
+
 0.8.0 (2022-04-15)
 ==================
 
