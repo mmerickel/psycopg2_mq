@@ -1,11 +1,14 @@
 graft src
 graft tests
+graft .github
 
 include README.rst
 include CHANGES.rst
 include LICENSE.txt
 
+include pyproject.toml
 include .coveragerc
+include .flake8
 include tox.ini
 
 recursive-exclude * __pycache__ *.py[cod]

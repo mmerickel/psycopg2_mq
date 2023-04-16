@@ -6,7 +6,6 @@ from zope.sqlalchemy import mark_changed
 
 from .util import datetime_to_int, get_next_rrule_time
 
-
 log = __import__('logging').getLogger(__name__)
 
 
@@ -77,19 +76,21 @@ class MQSource:
         while True:
             job_id = self.dbsession.execute(
                 insert(Job.__table__)
-                .values({
-                    Job.queue: queue,
-                    Job.method: method,
-                    Job.args: args,
-                    Job.created_time: now,
-                    Job.scheduled_time: when,
-                    Job.state: JobStates.PENDING,
-                    Job.cursor_key: cursor_key,
-                    Job.schedule_id: schedule_id,
-                    Job.collapsible: collapsible,
-                    Job.trace: trace,
-                    **job_kwargs,
-                })
+                .values(
+                    {
+                        Job.queue: queue,
+                        Job.method: method,
+                        Job.args: args,
+                        Job.created_time: now,
+                        Job.scheduled_time: when,
+                        Job.state: JobStates.PENDING,
+                        Job.cursor_key: cursor_key,
+                        Job.schedule_id: schedule_id,
+                        Job.collapsible: collapsible,
+                        Job.trace: trace,
+                        **job_kwargs,
+                    }
+                )
                 .on_conflict_do_nothing(
                     index_elements=[Job.cursor_key, Job.queue, Job.method],
                     index_where=sa.and_(
@@ -103,12 +104,17 @@ class MQSource:
                 if schedule_id is not None:
                     log.info(
                         'created new job=%s on queue=%s, method=%s from schedule=%s',
-                        job_id, queue, method, schedule_id,
+                        job_id,
+                        queue,
+                        method,
+                        schedule_id,
                     )
                 else:
                     log.info(
                         'created new job=%s on queue=%s, method=%s',
-                        job_id, queue, method,
+                        job_id,
+                        queue,
+                        method,
                     )
                 notify = True
                 break
@@ -148,9 +154,11 @@ class MQSource:
         if notify:
             epoch_seconds = datetime_to_int(when)
             payload = json.dumps({'j': job_id, 't': epoch_seconds})
-            self.dbsession.execute(sa.select(
-                sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
-            ))
+            self.dbsession.execute(
+                sa.select(
+                    sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
+                )
+            )
             # XXX notify is always true when the raw insert works above so we
             # handle the two scenarios (notify and raw insert) in which
             # mark_changed needs to be called with only a single call
@@ -182,7 +190,9 @@ class MQSource:
         }:
             raise RuntimeError('job is not in a retryable state')
         return self.call(
-            job.queue, job.method, job.args,
+            job.queue,
+            job.method,
+            job.args,
             when=job.scheduled_time,
             cursor_key=job.cursor_key,
             schedule_id=job.schedule_id,
@@ -201,9 +211,11 @@ class MQSource:
             now = datetime.utcnow()
         epoch_seconds = datetime_to_int(now)
         payload = json.dumps({'s': None, 't': epoch_seconds})
-        self.dbsession.execute(sa.select(
-            sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
-        ))
+        self.dbsession.execute(
+            sa.select(
+                sa.func.pg_notify(f'{self.model.channel_prefix}{queue}', payload),
+            )
+        )
 
     def add_schedule(
         self,
@@ -274,7 +286,7 @@ class MQSource:
         log.debug('disabled schedule=%s', schedule_id)
 
     def enable_schedule(self, schedule_id, *, now=None, reload=True):
-        """ Enable a schedule for execution at its next scheduled time."""
+        """Enable a schedule for execution at its next scheduled time."""
         if now is None:
             now = datetime.utcnow()
         schedule = self.get_schedule(schedule_id, for_update=True)
@@ -283,12 +295,14 @@ class MQSource:
             return
         schedule.is_enabled = True
         schedule.next_execution_time = get_next_rrule_time(
-            schedule.rrule, schedule.created_time, now)
+            schedule.rrule, schedule.created_time, now
+        )
         if reload and schedule.next_execution_time is not None:
             self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)
         log.debug(
             'enabling schedule=%s, next execution time=%s',
-            schedule_id, schedule.next_execution_time,
+            schedule_id,
+            schedule.next_execution_time,
         )
 
     def call_schedule(self, schedule_id, *, now=None, reload=True, when=None):
@@ -317,7 +331,8 @@ class MQSource:
 
         if schedule.is_enabled:
             schedule.next_execution_time = get_next_rrule_time(
-                schedule.rrule, schedule.created_time, now)
+                schedule.rrule, schedule.created_time, now
+            )
 
             if reload and schedule.next_execution_time is not None:
                 self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)

@@ -12,20 +12,14 @@ import signal
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
-from sqlalchemy.sql import table, column
+from sqlalchemy.sql import column, table
 import sys
 import threading
 import traceback
 
 from .source import MQSource
 from .trigger import Trigger
-from .util import (
-    class_name,
-    get_next_rrule_time,
-    int_to_datetime,
-    safe_object,
-)
-
+from .util import class_name, get_next_rrule_time, int_to_datetime, safe_object
 
 DEFAULT_TIMEOUT = 60
 DEFAULT_JITTER = 1
@@ -88,7 +82,6 @@ class MQWorker:
         engine,
         queues,
         model,
-
         timeout=DEFAULT_TIMEOUT,
         jitter=DEFAULT_JITTER,
         lock_key=DEFAULT_LOCK_KEY,
@@ -221,7 +214,6 @@ def maybe_capture_signals(ctx):
 def connect_db(ctx):
     rotate_dbconn(ctx)
     try:
-
         yield
 
     finally:
@@ -319,6 +311,7 @@ def retry_dbconn(fn):
                 rotate_dbconn(ctx)
                 return fn(ctx, *args, **kwargs)
             raise
+
     return wrapper
 
 
@@ -341,6 +334,7 @@ def dbsession(fn):
                 return result
             finally:
                 db.close()
+
     return wrapper
 
 
@@ -361,11 +355,14 @@ def release_stale_locks(ctx, *, db, model):
         db.query(Lock.queue, Lock.key)
         # do not block rows that are being cleaned by another transaction
         .with_for_update(of=Lock, skip_locked=True)
-        .outerjoin(pg_locks, sa.and_(
-            pg_locks.c.locktype == 'advisory',
-            pg_locks.c.classid == ctx._lock_key,
-            pg_locks.c.objid == Lock.lock_id,
-        ))
+        .outerjoin(
+            pg_locks,
+            sa.and_(
+                pg_locks.c.locktype == 'advisory',
+                pg_locks.c.classid == ctx._lock_key,
+                pg_locks.c.objid == Lock.lock_id,
+            ),
+        )
         .filter(
             Lock.queue.in_(ctx._queues.keys()),
             Lock.lock_id != sa.null(),
@@ -521,12 +518,7 @@ def execute_job(queue, job):
 
 @dbsession
 def finish_job(ctx, job_id, success, result, cursor, *, db, model):
-    job = (
-        db.query(model.Job)
-        .with_for_update()
-        .filter_by(id=job_id)
-        .one()
-    )
+    job = db.query(model.Job).with_for_update().filter_by(id=job_id).one()
 
     if cursor is not None:
         if job.cursor_key is not None:
@@ -535,11 +527,7 @@ def finish_job(ctx, job_id, success, result, cursor, *, db, model):
         elif cursor is not None:
             log.warning('ignoring cursor for job=%s without a cursor_key', job_id)
 
-    job.state = (
-        model.JobStates.COMPLETED
-        if success
-        else model.JobStates.FAILED
-    )
+    job.state = model.JobStates.COMPLETED if success else model.JobStates.FAILED
     job.result = result
     job.end_time = ctx._now()
     job.lock_id = None
@@ -573,11 +561,14 @@ def mark_lost_jobs(ctx, *, db, model):
     job_q = (
         db.query(model.Job)
         .with_for_update(of=model.Job)
-        .outerjoin(pg_locks, sa.and_(
-            pg_locks.c.locktype == 'advisory',
-            pg_locks.c.classid == ctx._lock_key,
-            pg_locks.c.objid == model.Job.lock_id,
-        ))
+        .outerjoin(
+            pg_locks,
+            sa.and_(
+                pg_locks.c.locktype == 'advisory',
+                pg_locks.c.classid == ctx._lock_key,
+                pg_locks.c.objid == model.Job.lock_id,
+            ),
+        )
         .filter(
             model.Job.state == model.JobStates.RUNNING,
             model.Job.queue.in_(ctx._queues.keys()),
@@ -594,12 +585,9 @@ def mark_lost_jobs(ctx, *, db, model):
         log.error('marking job=%s as lost', job.id)
         lost_job_ids.add(job.id)
 
-    job_q = (
-        db.query(model.Job)
-        .filter(
-            model.Job.state == model.JobStates.LOST,
-            model.Job.cursor_key.isnot(None),
-        )
+    job_q = db.query(model.Job).filter(
+        model.Job.state == model.JobStates.LOST,
+        model.Job.cursor_key.isnot(None),
     )
     for job in job_q:
         # avoid warning about jobs that were just marked lost
@@ -719,12 +707,14 @@ def lock_scheduler_queues(ctx, *, db, model, now=None):
     for queue in (q for q in ctx._queues if q not in ctx._scheduler_queues):
         result = db.execute(
             insert(Lock.__table__)
-            .values({
-                Lock.queue: queue,
-                Lock.key: 'scheduler',
-                Lock.lock_id: ctx._lock_id,
-                Lock.worker: ctx._name,
-            })
+            .values(
+                {
+                    Lock.queue: queue,
+                    Lock.key: 'scheduler',
+                    Lock.lock_id: ctx._lock_id,
+                    Lock.worker: ctx._name,
+                }
+            )
             .on_conflict_do_nothing()
             .returning(Lock.queue)
         ).scalar()
@@ -748,11 +738,13 @@ def lock_scheduler_queues(ctx, *, db, model, now=None):
     )
     for s in stale_schedules:
         next_execution_time = get_next_rrule_time(
-            s.rrule, s.created_time, stale_cutoff_time)
+            s.rrule, s.created_time, stale_cutoff_time
+        )
         log.warning(
             'execution time on schedule=%s is very old (%s seconds), skipping '
             'to next time=%s',
-            s.id, (now - s.next_execution_time).total_seconds(),
+            s.id,
+            (now - s.next_execution_time).total_seconds(),
             next_execution_time,
         )
         s.next_execution_time = next_execution_time
@@ -875,7 +867,7 @@ def handle_notifies(ctx, conn):
         channel, payload = notify.channel, notify.payload
 
         try:
-            queue = channel[len(ctx._model.channel_prefix):]
+            queue = channel[len(ctx._model.channel_prefix) :]
             data = json.loads(payload)
             t = data['t']
             event_time = int_to_datetime(t)
@@ -897,8 +889,11 @@ def handle_notifies(ctx, conn):
                 raise Exception
 
         except Exception:
-            log.exception('error while handling event from channel=%s, '
-                          'payload=%s', channel, payload)
+            log.exception(
+                'error while handling event from channel=%s, ' 'payload=%s',
+                channel,
+                payload,
+            )
             continue
 
     return event

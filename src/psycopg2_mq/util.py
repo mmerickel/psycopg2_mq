@@ -28,19 +28,15 @@ def safe_object(obj, *, memo=None):
     if memo is None:
         memo = Memo()
     if memo.memoize(obj):
-        return '<cycle type={}>'.format(type(obj).__name__)
+        return f'<cycle type={type(obj).__name__}>'
 
     try:
         if isinstance(obj, (tuple, list)):
-            return [
-                safe_object(x, memo=memo)
-                for x in obj
-            ]
+            return [safe_object(x, memo=memo) for x in obj]
 
         if isinstance(obj, Mapping):
             return {
-                safe_str(k): safe_object(v, memo=memo)
-                for k, v in list(obj.items())
+                safe_str(k): safe_object(v, memo=memo) for k, v in list(obj.items())
             }
 
         return safe_repr(obj)

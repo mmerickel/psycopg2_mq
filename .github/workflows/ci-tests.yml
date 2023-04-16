@@ -1,0 +1,24 @@
+name: Build and test
+
+on:
+    # Only on pushes to main or one of the release branches we build on push
+    push:
+        branches:
+            - main
+        tags:
+    # Build pull requests
+    pull_request:
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+        name: Lint the package
+        steps:
+            - uses: actions/checkout@v3
+            - name: Setup python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: "3.7"
+                  architecture: x64
+            - run: pip install tox
+            - run: tox -e lint

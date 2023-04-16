@@ -2,15 +2,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as pg
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from sqlalchemy.schema import Column, CheckConstraint, ForeignKey, Index
-from sqlalchemy.types import (
-    BigInteger,
-    Boolean,
-    DateTime,
-    Enum,
-    Integer,
-    Text,
-)
+from sqlalchemy.schema import CheckConstraint, Column, ForeignKey, Index
+from sqlalchemy.types import BigInteger, Boolean, DateTime, Enum, Integer, Text
 
 
 class Model:
@@ -43,7 +36,7 @@ def make_default_model(metadata, JobStates=JobStates):
         JobStates.FAILED,
         JobStates.LOST,
         metadata=metadata,
-        name='mq_job_state'
+        name='mq_job_state',
     )
 
     class Job(Base):
@@ -87,7 +80,9 @@ def make_default_model(metadata, JobStates=JobStates):
             ),
             Index(
                 'uq_mq_job_pending_cursor_key_queue_method',
-                cursor_key, queue, method,
+                cursor_key,
+                queue,
+                method,
                 postgresql_where=sa.and_(
                     state == JobStates.PENDING,
                     collapsible == sa.true(),
@@ -124,7 +119,7 @@ def make_default_model(metadata, JobStates=JobStates):
         )
 
         def __repr__(self):
-            return '<JobCursor(key="{0.key}")>'.format(self)
+            return f'<JobCursor(key="{self.key}")>'
 
     class JobSchedule(Base):
         __tablename__ = 'mq_job_schedule'
@@ -155,8 +150,7 @@ def make_default_model(metadata, JobStates=JobStates):
                 ', rrule="{0.rrule}"'
                 ', cursor_key="{0.cursor_key}"'
                 ', is_enabled={0.is_enabled}'
-                '>'
-                .format(self)
+                '>'.format(self)
             )
 
     class Lock(Base):

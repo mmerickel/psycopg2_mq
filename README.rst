@@ -5,6 +5,10 @@ psycopg2_mq
 .. image:: https://img.shields.io/pypi/v/psycopg2_mq.svg
     :target: https://pypi.org/pypi/psycopg2_mq
 
+.. image:: https://github.com/mmerickel/psycopg2_mq/workflows/Build%20and%20test/badge.svg?branch=main
+    :target: https://github.com/mmerickel/psycopg2_mq/actions?query=workflow%3A%22Build+and+test%22
+    :alt: main CI Status
+
 ``psycopg2_mq`` is a message queue implemented on top of
 `PostgreSQL <https://www.postgresql.org/>`__,
 `SQLAlchemy <https://www.sqlalchemy.org/>`__, and
