@@ -141,6 +141,7 @@ class MQWorker:
     def result_from_error(self, ex):
         return {
             'exc': class_name(ex.__class__),
+            'message': str(ex),
             'args': safe_object(ex.args),
             'tb': traceback.format_tb(ex.__traceback__),
         }
@@ -890,7 +891,7 @@ def handle_notifies(ctx, conn):
 
         except Exception:
             log.exception(
-                'error while handling event from channel=%s, ' 'payload=%s',
+                'error while handling event from channel=%s, payload=%s',
                 channel,
                 payload,
             )
