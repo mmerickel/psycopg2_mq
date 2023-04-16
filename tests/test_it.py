@@ -1,7 +1,5 @@
 from dateutil.parser import parse as parse_datetime
 
-import psycopg2_mq
-
 
 def test_rrule():
     from psycopg2_mq.util import get_next_rrule_time

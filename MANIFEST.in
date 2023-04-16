@@ -9,6 +9,7 @@ include LICENSE.txt
 include pyproject.toml
 include .coveragerc
 include .flake8
+include pytest.ini
 include tox.ini
 
 recursive-exclude * __pycache__ *.py[cod]
