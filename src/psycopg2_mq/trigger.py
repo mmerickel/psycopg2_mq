@@ -2,6 +2,12 @@ import os
 
 
 class Trigger:
+    """
+    A thread-safe trigger that can be passed to :func:`select.select`.
+
+    Invoke :meth:`.notify` to fire the trigger.
+    """
+
     def __init__(self):
         self.r, self.w = os.pipe()
 

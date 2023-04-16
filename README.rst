@@ -25,6 +25,10 @@ to build a multithreaded worker system. It is broken into two components:
 - ``psycopg2_mq.MQSource`` - a source object providing a client-side API for
   invoking and querying job states.
 
+It is expected that these core components are then wrapped into your own
+application in any way that you see fit, without dictating a specific CLI
+or framework.
+
 Data Model
 ==========
 
