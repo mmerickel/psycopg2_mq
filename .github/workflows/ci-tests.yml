@@ -21,18 +21,20 @@ jobs:
                     - "3.11"
                 os:
                     - "ubuntu-latest"
-                    - "windows-latest"
                     - "macos-latest"
                 architecture:
                     - x64
                     - x86
+                pg-version:
+                    - "12"
+                    - "14"
                 exclude:
                     # Linux and macOS don't have x86 python
                     - os: "ubuntu-latest"
                       architecture: x86
                     - os: "macos-latest"
                       architecture: x86
-        name: "Python: ${{ matrix.py }}-${{ matrix.architecture }} on ${{ matrix.os }}"
+        name: "Python ${{ matrix.py }}-${{ matrix.architecture }} + PG ${{ matrix.pg-version }} on ${{ matrix.os }}"
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v3
@@ -41,6 +43,9 @@ jobs:
               with:
                   python-version: ${{ matrix.py }}
                   architecture: ${{ matrix.architecture }}
+            - uses: ankane/setup-postgres@v1
+              with:
+                  postgres-version: ${{ matrix.pg-version }}
             - run: pip install tox
             - name: Running tox
               run: tox -e py
