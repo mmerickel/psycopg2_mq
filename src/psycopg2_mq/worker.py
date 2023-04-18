@@ -181,6 +181,7 @@ def guess_worker_name():
 def maybe_capture_signals(ctx):
     if not ctx._capture_signals:
         yield
+        return
 
     def onsigterm(*args):
         # heroku may send multiple sigterm and we want to only respond

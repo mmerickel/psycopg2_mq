@@ -87,6 +87,7 @@ def make_default_model(metadata, JobStates=JobStates):
                     state == JobStates.PENDING,
                     collapsible == sa.true(),
                 ),
+                unique=True,
             ),
             Index(
                 'uq_mq_job_running_cursor_key',

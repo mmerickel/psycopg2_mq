@@ -26,6 +26,8 @@ jobs:
                 architecture:
                     - x64
                     - x86
+                pg-version:
+                    - "12"
                 exclude:
                     # Linux and macOS don't have x86 python
                     - os: "ubuntu-latest"
@@ -41,9 +43,12 @@ jobs:
               with:
                   python-version: ${{ matrix.py }}
                   architecture: ${{ matrix.architecture }}
+            - uses: ankane/setup-postgres@v1
+              with:
+                  postgres-version: ${{ matrix.pg-version }}
             - run: pip install tox
             - name: Running tox
-              run: tox -e py
+              run: tox -e py -- --postgresql-exec="/usr/lib/postgresql/${{ matrix.pg-version }}/bin/pg_ctl"
     coverage:
         runs-on: ubuntu-latest
         name: Validate coverage
