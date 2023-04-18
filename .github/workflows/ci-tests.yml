@@ -37,7 +37,7 @@ jobs:
                       architecture: x86
                     # pg < 14 doesn't run on windows
                     - os: "windows-latest"
-                      pg-version: "14"
+                      pg-version: "12"
         name: "Python ${{ matrix.py }}-${{ matrix.architecture }} + PG ${{ matrix.pg-version }} on ${{ matrix.os }}"
         runs-on: ${{ matrix.os }}
         steps:
