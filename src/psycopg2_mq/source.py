@@ -33,7 +33,7 @@ class MQSource:
         job_kwargs=None,
         conflict_resolver=None,
         schedule_id=None,
-        collapse_on_cursor=True,
+        collapse_on_cursor=None,
         trace=None,
     ):
         """
@@ -52,6 +52,9 @@ class MQSource:
             the ``conflict_resolver`` will be invoked with the existing job and
             the new request will be collapsed into the previous pending job.
 
+            By default, this is ``True`` when ``cursor_key`` is set. It is an
+            error to set it to ``True`` without using a cursor.
+
         """
         if now is None:
             now = datetime.utcnow()
@@ -65,7 +68,11 @@ class MQSource:
         Job = self.model.Job
         JobStates = self.model.JobStates
 
-        collapsible = cursor_key is not None and collapse_on_cursor
+        if collapse_on_cursor is None and cursor_key:
+            collapse_on_cursor = True
+
+        if collapse_on_cursor and not cursor_key:
+            raise ValueError('cannot collapse a job that is not using a cursor')
 
         job_id = None
         notify = False
@@ -86,7 +93,7 @@ class MQSource:
                         Job.state: JobStates.PENDING,
                         Job.cursor_key: cursor_key,
                         Job.schedule_id: schedule_id,
-                        Job.collapsible: collapsible,
+                        Job.collapsible: collapse_on_cursor,
                         Job.trace: trace,
                         **job_kwargs,
                     }
@@ -189,6 +196,11 @@ class MQSource:
             self.model.JobStates.LOST,
         }:
             raise RuntimeError('job is not in a retryable state')
+        if job.collapsible:
+            raise ValueError(
+                'cannot automatically retry a collapsible job, instead'
+                ' reinvoke call() with an appropriate conflict_resolver'
+            )
         return self.call(
             job.queue,
             job.method,
@@ -196,6 +208,8 @@ class MQSource:
             when=job.scheduled_time,
             cursor_key=job.cursor_key,
             schedule_id=job.schedule_id,
+            collapse_on_cursor=False,
+            trace=job.trace,
         )
 
     def reload_scheduler(self, queue, *, now=None):
