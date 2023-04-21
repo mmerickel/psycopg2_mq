@@ -6,8 +6,8 @@ Changes
 
 - Add support for Python 3.10, and 3.11.
 
-- Prevent retrying of collapsible jobs. Require them to be invoked using
-  ``call`` instead for an opportunity to specify a ``conflict_resolver``.
+- [breaking] Prevent retrying of collapsible jobs. Require them to be invoked
+  using ``call`` instead for an opportunity to specify a ``conflict_resolver``.
 
 - Fix a bug in the default model schema in which the collapsible database
   index was not marked unique.
