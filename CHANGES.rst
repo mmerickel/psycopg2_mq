@@ -6,6 +6,22 @@ unreleased
 
 - Add support for Python 3.10, and 3.11.
 
+- Prevent retrying of collapsible jobs. Require them to be invoked using
+``call`` instead for an opportunity to specify a ``conflict_resolver``.
+
+- Fix a bug in the default model schema in which the collapsible database
+  index was not marked unique.
+
+- Copy trace info when retrying a job.
+
+- Capture the stringified exception to the job result in the ``message`` key,
+  alongside the existing ``tb``, ``exc``, and ``args`` keys.
+
+- The worker was not recognizing ``capture_signals=False``, causing problems
+  when running the event loop in other threads.
+
+- Blackify the codebase and add some real tests. Yay!
+
 0.8.3 (2022-04-15)
 ------------------
 
