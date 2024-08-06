@@ -20,7 +20,7 @@ jobs:
                     - "3.10"
                     - "3.11"
                 os:
-                    - "ubuntu-latest"
+                    - "ubuntu-22.04"
                     - "macos-13"
                 architecture:
                     - x64
@@ -30,7 +30,7 @@ jobs:
                     - "14"
                 exclude:
                     # Linux and macOS don't have x86 python
-                    - os: "ubuntu-latest"
+                    - os: "ubuntu-22.04"
                       architecture: x86
                     - os: "macos-13"
                       architecture: x86
@@ -50,7 +50,7 @@ jobs:
             - name: Running tox
               run: tox -e py
     coverage:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-22.04
         name: Validate coverage
         steps:
             - uses: actions/checkout@v4
@@ -63,7 +63,7 @@ jobs:
             - run: pip install tox
             - run: tox -e py37,coverage
     lint:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-22.04
         name: Lint the package
         steps:
             - uses: actions/checkout@v4
