@@ -1,6 +1,16 @@
 Changes
 =======
 
+0.10 (2023-08-06)
+------------------
+
+- Add support for Python 3.12.
+
+- Drop support for Python 3.7, and 3.8.
+
+- Fix a race condition on shutdown where the job fails to cleanup because the triggers
+  are gone while the pool is still shutting down.
+
 0.9 (2023-04-21)
 ----------------
 
