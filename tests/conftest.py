@@ -42,6 +42,7 @@ def dbengine(test_db_proc):
     host = test_db_proc.host
     port = test_db_proc.port
     dbname = test_db_proc.dbname
+    template_dbname = test_db_proc.template_dbname
 
     # the janitor creates a new database for this specific test fixture,
     # copying data from the template database initialized in load_model above
@@ -52,6 +53,7 @@ def dbengine(test_db_proc):
         host=host,
         port=port,
         dbname=dbname,
+        template_dbname=template_dbname,
     ):
         engine = sa.create_engine(
             f'postgresql://{user}:{password}@{host}:{port}/{dbname}'
