@@ -129,9 +129,9 @@ class MQWorker:
         try:
             log.info('starting mq worker=%s', self._name)
             with maybe_capture_signals(self):
-                with connect_pool(self):
-                    with connect_job_trigger(self):
-                        with connect_shutdown_trigger(self):
+                with connect_job_trigger(self):
+                    with connect_shutdown_trigger(self):
+                        with connect_pool(self):
                             with connect_db(self):
                                 eventloop(self)
 
