@@ -1,6 +1,22 @@
 Changes
 =======
 
+0.12 (2024-10-27)
+-----------------
+
+- [model migration] Moved the ``schedule_id`` and ``listener_id`` foreign keys from
+  the ``Job`` table to many-to-many link tables to support tracking the source properly
+  when collapsing occurs. Possible migration::
+
+    insert into mq_job_schedule_link (job_id, schedule_id)
+      select id, schedule_id from mq_job where schedule_id is not null;
+
+    insert into mq_job_listener_link (job_id, listener_id)
+      select id, listener_id from mq_job where listener_id is not null;
+
+    alter table mq_job drop column schedule_id;
+    alter table mq_job drop column listener_id;
+
 0.11 (2024-10-27)
 -----------------
 

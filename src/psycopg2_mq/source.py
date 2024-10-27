@@ -67,6 +67,8 @@ class MQSource:
             job_kwargs = {}
 
         Job = self.model.Job
+        JobListenerLink = self.model.JobListenerLink
+        JobScheduleLink = self.model.JobScheduleLink
         JobStates = self.model.JobStates
 
         if collapse_on_cursor and not cursor_key:
@@ -90,8 +92,6 @@ class MQSource:
                         Job.scheduled_time: when,
                         Job.state: JobStates.PENDING,
                         Job.cursor_key: cursor_key,
-                        Job.schedule_id: schedule_id,
-                        Job.listener_id: listener_id,
                         Job.collapsible: collapse_on_cursor,
                         Job.trace: trace,
                         **job_kwargs,
@@ -164,6 +164,40 @@ class MQSource:
                         mark_changed(self.dbsession)
 
                 break
+
+        if listener_id is not None and JobListenerLink is not None:
+            self.dbsession.execute(
+                insert(JobListenerLink.__table__)
+                .values(
+                    {
+                        JobListenerLink.job_id: job_id,
+                        JobListenerLink.listener_id: listener_id,
+                    }
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        JobListenerLink.job_id,
+                        JobListenerLink.listener_id,
+                    ],
+                )
+            )
+
+        if schedule_id is not None and JobScheduleLink is not None:
+            self.dbsession.execute(
+                insert(JobScheduleLink.__table__)
+                .values(
+                    {
+                        JobScheduleLink.job_id: job_id,
+                        JobScheduleLink.schedule_id: schedule_id,
+                    }
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        JobScheduleLink.job_id,
+                        JobScheduleLink.schedule_id,
+                    ],
+                )
+            )
 
         if notify:
             epoch_seconds = datetime_to_int(when)

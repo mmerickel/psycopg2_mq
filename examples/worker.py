@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sqlalchemy as sa
 
 from psycopg2_mq import MQWorker, make_default_model
@@ -21,6 +22,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--url', required=True)
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.DEBUG)
 
     engine = sa.create_engine(args.url)
     metadata.create_all(engine)

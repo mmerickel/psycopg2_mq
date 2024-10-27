@@ -47,7 +47,6 @@ class JobContext:
         args,
         cursor_key=None,
         cursor=None,
-        schedule_id=None,
         trace=None,
     ):
         self.id = id
@@ -56,7 +55,6 @@ class JobContext:
         self.args = args
         self.cursor_key = cursor_key
         self.cursor = cursor
-        self.schedule_id = schedule_id
         self.trace = trace
 
     def extend(self, **kw):
@@ -481,19 +479,13 @@ def claim_pending_job(ctx, *, now=None, db, model):
         job.start_time = now
         job.worker = ctx._name
 
-        if job.schedule_id is not None:
-            log.info(
-                'beginning job=%s from schedule=%s %.3fs after scheduled start',
-                job.id,
-                job.schedule_id,
-                (job.start_time - job.scheduled_time).total_seconds(),
-            )
-        else:
-            log.info(
-                'beginning job=%s %.3fs after scheduled start',
-                job.id,
-                (job.start_time - job.scheduled_time).total_seconds(),
-            )
+        log.info(
+            'beginning job=%s queue=%s method=%s %.3fs after scheduled start',
+            job.id,
+            job.queue,
+            job.method,
+            (job.start_time - job.scheduled_time).total_seconds(),
+        )
         return JobContext(
             id=job.id,
             queue=job.queue,
@@ -501,7 +493,6 @@ def claim_pending_job(ctx, *, now=None, db, model):
             args=job.args,
             cursor_key=job.cursor_key,
             cursor=cursor,
-            schedule_id=job.schedule_id,
             trace=job.trace,
         )
 

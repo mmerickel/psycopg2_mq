@@ -9,12 +9,25 @@ from sqlalchemy.types import BigInteger, Boolean, DateTime, Enum, Integer, Text
 class Model:
     channel_prefix = 'mq_'
 
-    def __init__(self, Job, JobStates, JobCursor, JobListener, JobSchedule, Lock):
+    def __init__(
+        self,
+        *,
+        Job,
+        JobStates,
+        Lock,
+        JobCursor,
+        JobListener,
+        JobSchedule,
+        JobListenerLink=None,
+        JobScheduleLink=None,
+    ):
         self.Job = Job
         self.JobStates = JobStates
         self.JobCursor = JobCursor
         self.JobListener = JobListener
         self.JobSchedule = JobSchedule
+        self.JobListenerLink = JobListenerLink
+        self.JobScheduleLink = JobScheduleLink
         self.Lock = Lock
 
 
@@ -56,18 +69,6 @@ def make_default_model(metadata, JobStates=JobStates):
         args = Column(pg.JSONB, nullable=False)
         result = Column(pg.JSONB)
 
-        schedule_id = Column(
-            ForeignKey('mq_job_schedule.id', ondelete='cascade', onupdate='cascade'),
-            index=True,
-        )
-        schedule = relationship(lambda: JobSchedule, back_populates='jobs')
-
-        listener_id = Column(
-            ForeignKey('mq_job_listener.id', ondelete='cascade', onupdate='cascade'),
-            index=True,
-        )
-        listener = relationship(lambda: JobListener, back_populates='jobs')
-
         cursor_key = Column(Text)
         cursor_snapshot = Column(pg.JSONB)
         collapsible = Column(Boolean)
@@ -76,6 +77,22 @@ def make_default_model(metadata, JobStates=JobStates):
 
         lock_id = Column(Integer)
         worker = Column(Text)
+
+        listener_links = relationship(lambda: JobListenerLink, back_populates='job')
+        listeners = relationship(
+            lambda: JobListener,
+            secondary=lambda: JobListenerLink.__table__,
+            back_populates='jobs',
+            viewonly=True,
+        )
+
+        schedule_links = relationship(lambda: JobScheduleLink, back_populates='job')
+        schedules = relationship(
+            lambda: JobSchedule,
+            secondary=lambda: JobScheduleLink.__table__,
+            back_populates='jobs',
+            viewonly=True,
+        )
 
         __table_args__ = (
             CheckConstraint(
@@ -113,8 +130,7 @@ def make_default_model(metadata, JobStates=JobStates):
                 ', queue="{0.queue}"'
                 ', method="{0.method}"'
                 ', cursor_key="{0.cursor_key}"'
-                ', schedule_id={0.schedule_id}'
-                ', listener_id={0.listener_id}'
+                ', collapsible="{0.collapsible}"'
                 ')>'
             ).format(self)
 
@@ -127,9 +143,12 @@ def make_default_model(metadata, JobStates=JobStates):
         updated_job_id = Column(
             ForeignKey('mq_job.id', ondelete='set null', onupdate='cascade'),
         )
+        updated_job = relationship(lambda: Job)
 
         def __repr__(self):
-            return f'<JobCursor(key="{self.key}")>'
+            return (
+                f'<JobCursor(key="{self.key}", updated_job_id={self.updated_job_id})>'
+            )
 
     class JobListener(Base):
         __tablename__ = 'mq_job_listener'
@@ -146,6 +165,7 @@ def make_default_model(metadata, JobStates=JobStates):
         method = Column(Text, nullable=False)
         args = Column(pg.JSONB, nullable=False)
 
+        # the event context will be added as an arg in the job via this key
         context_arg_key = Column(Text, nullable=False)
 
         # a duration in the future when the job should execute
@@ -156,12 +176,19 @@ def make_default_model(metadata, JobStates=JobStates):
         cursor_key = Column(Text)
         collapse_on_cursor = Column(Boolean)
 
-        jobs = relationship(lambda: Job, back_populates='listener')
+        job_links = relationship(lambda: JobListenerLink, back_populates='listener')
+        jobs = relationship(
+            lambda: Job,
+            secondary=lambda: JobListenerLink.__table__,
+            back_populates='listeners',
+            viewonly=True,
+        )
 
         def __repr__(self):
             return (
                 '<JobListener('
-                'event="{0.event}"'
+                'id={0.id}'
+                ', event="{0.event}"'
                 ', queue="{0.queue}"'
                 ', method="{0.method}"'
                 ', when="{0.when}"'
@@ -194,15 +221,78 @@ def make_default_model(metadata, JobStates=JobStates):
 
         jobs = relationship(lambda: Job, back_populates='schedule')
 
+        job_links = relationship(lambda: JobScheduleLink, back_populates='schedule')
+        jobs = relationship(
+            lambda: Job,
+            secondary=lambda: JobScheduleLink.__table__,
+            back_populates='schedules',
+            viewonly=True,
+        )
+
         def __repr__(self):
             return (
                 '<JobSchedule('
-                'queue="{0.queue}"'
+                'id={0.id}'
+                ', queue="{0.queue}"'
                 ', method="{0.method}"'
                 ', rrule="{0.rrule}"'
                 ', cursor_key="{0.cursor_key}"'
                 ', collapse_on_cursor={0.collapse_on_cursor}'
                 ', is_enabled={0.is_enabled}'
+                '>'.format(self)
+            )
+
+    class JobListenerLink(Base):
+        __tablename__ = 'mq_job_listener_link'
+
+        job_id = Column(
+            ForeignKey('mq_job.id', ondelete='cascade', onupdate='cascade'),
+            primary_key=True,
+            nullable=False,
+            index=True,
+        )
+        job = relationship(lambda: Job, back_populates='listener_links')
+
+        listener_id = Column(
+            ForeignKey('mq_job_listener.id', ondelete='cascade', onupdate='cascade'),
+            primary_key=True,
+            nullable=False,
+            index=True,
+        )
+        listener = relationship(lambda: JobListener, back_populates='job_links')
+
+        def __repr__(self):
+            return (
+                '<JobListenerLink('
+                'job_id={0.job_id}'
+                ', listener_id={0.listener_id}'
+                '>'.format(self)
+            )
+
+    class JobScheduleLink(Base):
+        __tablename__ = 'mq_job_schedule_link'
+
+        job_id = Column(
+            ForeignKey('mq_job.id', ondelete='cascade', onupdate='cascade'),
+            primary_key=True,
+            nullable=False,
+            index=True,
+        )
+        job = relationship(lambda: Job, back_populates='schedule_links')
+
+        schedule_id = Column(
+            ForeignKey('mq_job_schedule.id', ondelete='cascade', onupdate='cascade'),
+            primary_key=True,
+            nullable=False,
+            index=True,
+        )
+        schedule = relationship(lambda: JobSchedule, back_populates='job_links')
+
+        def __repr__(self):
+            return (
+                '<JobScheduleLink('
+                'job_id={0.job_id}'
+                ', schedule_id={0.schedule_id}'
                 '>'.format(self)
             )
 
@@ -218,4 +308,13 @@ def make_default_model(metadata, JobStates=JobStates):
         def __repr__(self):
             return '<Lock(queue="{0.queue}", key="{0.key}">'.format(self)
 
-    return Model(Job, JobStates, JobCursor, JobListener, JobSchedule, Lock)
+    return Model(
+        Job=Job,
+        JobStates=JobStates,
+        JobCursor=JobCursor,
+        JobListener=JobListener,
+        JobSchedule=JobSchedule,
+        JobListenerLink=JobListenerLink,
+        JobScheduleLink=JobScheduleLink,
+        Lock=Lock,
+    )

@@ -1,5 +1,5 @@
 import argparse
-from contextlib import contextmanager
+import logging
 import sqlalchemy as sa
 import sqlalchemy.orm
 import time
@@ -10,7 +10,6 @@ metadata = sa.MetaData()
 model = make_default_model(metadata)
 
 
-@contextmanager
 def wait_for_job(source, job_id, *, max_wait=60):
     start = time.time()
     while True:
@@ -23,7 +22,6 @@ def wait_for_job(source, job_id, *, max_wait=60):
                 source.model.JobStates.FAILED,
                 source.model.JobStates.LOST,
             }:
-                yield job
                 break
             time.sleep(0.1)
 
@@ -33,6 +31,8 @@ def main():
     parser.add_argument('--url', required=True)
     parser.add_argument('--no-wait', action='store_true')
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.DEBUG)
 
     engine = sa.create_engine(args.url)
     metadata.create_all(engine)
@@ -45,9 +45,10 @@ def main():
         db.commit()
 
         if not args.no_wait:
-            with wait_for_job(source, job_id) as job:
-                print('state', job.state)
-                print('result', job.result)
+            wait_for_job(source, job_id)
+            job = source.find_job(job_id)
+            print('state', job.state)
+            print('result', job.result)
 
 
 if __name__ == '__main__':
