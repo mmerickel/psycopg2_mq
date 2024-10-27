@@ -1,6 +1,12 @@
 Changes
 =======
 
+unreleased
+----------
+
+- [model migration] Add ``collapse_on_cursor`` attribute to
+  the ``JobSchedule`` model.
+
 0.10 (2023-08-06)
 ------------------
 

@@ -240,6 +240,7 @@ class MQSource:
         rrule,
         is_enabled=True,
         cursor_key=None,
+        collapse_on_cursor=None,
         schedule_kwargs=None,
         now=None,
         reload=True,
@@ -255,6 +256,14 @@ class MQSource:
         if schedule_kwargs is None:
             schedule_kwargs = {}
 
+        if collapse_on_cursor is None and cursor_key:
+            collapse_on_cursor = True
+
+        if collapse_on_cursor and not cursor_key:
+            raise ValueError(
+                'cannot collapse jobs from a schedule that is not using a cursor'
+            )
+
         next_execution_time = get_next_rrule_time(rrule, now, now)
 
         schedule = self.model.JobSchedule(
@@ -264,6 +273,7 @@ class MQSource:
             rrule=rrule,
             is_enabled=is_enabled,
             cursor_key=cursor_key,
+            collapse_on_cursor=collapse_on_cursor,
             created_time=now,
             next_execution_time=next_execution_time,
             **schedule_kwargs,
@@ -338,6 +348,7 @@ class MQSource:
             method=schedule.method,
             args=schedule.args,
             cursor_key=schedule.cursor_key,
+            collapse_on_cursor=schedule.collapse_on_cursor,
             now=now,
             when=when,
             schedule_id=schedule.id,

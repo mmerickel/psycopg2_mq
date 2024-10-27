@@ -106,6 +106,7 @@ def make_default_model(metadata, JobStates=JobStates):
                 ', queue="{0.queue}"'
                 ', method="{0.method}"'
                 ', cursor_key="{0.cursor_key}"'
+                ', schedule_id={0.schedule_id}'
                 ')>'
             ).format(self)
 
@@ -138,6 +139,8 @@ def make_default_model(metadata, JobStates=JobStates):
         args = Column(pg.JSONB, nullable=False)
 
         cursor_key = Column(Text)
+        # defaults to true if cursor_key is set
+        collapse_on_cursor = Column(Boolean)
 
         next_execution_time = Column(DateTime, nullable=True)
 
@@ -150,6 +153,7 @@ def make_default_model(metadata, JobStates=JobStates):
                 ', method="{0.method}"'
                 ', rrule="{0.rrule}"'
                 ', cursor_key="{0.cursor_key}"'
+                ', collapse_on_cursor={0.collapse_on_cursor}'
                 ', is_enabled={0.is_enabled}'
                 '>'.format(self)
             )
