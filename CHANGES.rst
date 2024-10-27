@@ -1,8 +1,8 @@
 Changes
 =======
 
-unreleased
-----------
+0.11 (2024-10-27)
+-----------------
 
 - Add support for Python 3.13.
 
@@ -34,7 +34,7 @@ unreleased
 - The ``MQSource`` that is used by the ``MQWorker`` can now be overridden via the
   ``mq_source_factory`` option.
 
-0.10 (2023-08-06)
+0.10 (2024-08-06)
 ------------------
 
 - Add support for Python 3.12.
