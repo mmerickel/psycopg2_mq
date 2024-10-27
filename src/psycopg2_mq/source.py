@@ -34,8 +34,8 @@ class MQSource:
         cursor_key=None,
         collapse_on_cursor=False,
         conflict_resolver=None,
-        schedule_id=None,
-        listener_id=None,
+        schedule_ids=None,
+        listener_ids=None,
         trace=None,
     ):
         """
@@ -107,21 +107,21 @@ class MQSource:
                 .returning(Job.id)
             ).scalar()
             if job_id is not None:
-                if schedule_id is not None:
+                if schedule_ids:
                     log.info(
                         'created new job=%s on queue=%s, method=%s from schedule=%s',
                         job_id,
                         queue,
                         method,
-                        schedule_id,
+                        schedule_ids,
                     )
-                elif listener_id is not None:
+                elif listener_ids:
                     log.info(
                         'created new job=%s on queue=%s, method=%s from listener=%s',
                         job_id,
                         queue,
                         method,
-                        listener_id,
+                        listener_ids,
                     )
                 else:
                     log.info(
@@ -165,14 +165,17 @@ class MQSource:
 
                 break
 
-        if listener_id is not None and JobListenerLink is not None:
+        if listener_ids and JobListenerLink is not None:
             self.dbsession.execute(
                 insert(JobListenerLink.__table__)
                 .values(
-                    {
-                        JobListenerLink.job_id: job_id,
-                        JobListenerLink.listener_id: listener_id,
-                    }
+                    [
+                        {
+                            JobListenerLink.job_id: job_id,
+                            JobListenerLink.listener_id: listener_id,
+                        }
+                        for listener_id in listener_ids
+                    ]
                 )
                 .on_conflict_do_nothing(
                     index_elements=[
@@ -182,14 +185,17 @@ class MQSource:
                 )
             )
 
-        if schedule_id is not None and JobScheduleLink is not None:
+        if schedule_ids and JobScheduleLink is not None:
             self.dbsession.execute(
                 insert(JobScheduleLink.__table__)
                 .values(
-                    {
-                        JobScheduleLink.job_id: job_id,
-                        JobScheduleLink.schedule_id: schedule_id,
-                    }
+                    [
+                        {
+                            JobScheduleLink.job_id: job_id,
+                            JobScheduleLink.schedule_id: schedule_id,
+                        }
+                        for schedule_id in schedule_ids
+                    ]
                 )
                 .on_conflict_do_nothing(
                     index_elements=[
@@ -242,13 +248,15 @@ class MQSource:
             self.model.JobStates.LOST,
         }:
             raise RuntimeError('job is not in a retryable state')
-        if job.collapsible:
-            raise ValueError(
-                'cannot automatically retry a collapsible job, instead'
-                ' reinvoke call() with an appropriate conflict_resolver'
-            )
+
         if job.state == self.model.JobStates.LOST:
             self.fail_lost_job(job_id, now=now)
+
+        kw = {}
+        if self.model.JobListenerLink is not None:
+            kw['listener_ids'] = [link.listener_id for link in job.listener_links]
+        if self.model.JobScheduleLink is not None:
+            kw['schedule_ids'] = [link.schedule_id for link in job.schedule_links]
 
         return self.call(
             job.queue,
@@ -257,9 +265,9 @@ class MQSource:
             now=now,
             when=job.scheduled_time,
             cursor_key=job.cursor_key,
-            schedule_id=job.schedule_id,
             collapse_on_cursor=False,
             trace=job.trace,
+            **kw,
         )
 
     def fail_lost_job(self, job_id, *, now=None):
@@ -414,7 +422,7 @@ class MQSource:
             collapse_on_cursor=schedule.collapse_on_cursor,
             now=now,
             when=when,
-            schedule_id=schedule.id,
+            schedule_ids=[schedule.id],
         )
 
         if schedule.is_enabled:
@@ -434,6 +442,7 @@ class MQSource:
         method,
         args,
         *,
+        when=None,
         is_enabled=True,
         context_arg_key=None,
         cursor_key=None,
@@ -466,6 +475,7 @@ class MQSource:
             method=method,
             args=args,
             context_arg_key=context_arg_key,
+            when=when,
             is_enabled=is_enabled,
             cursor_key=cursor_key,
             collapse_on_cursor=collapse_on_cursor,
@@ -558,7 +568,7 @@ class MQSource:
                 conflict_resolver=conflict_resolver,
                 now=now,
                 when=when,
-                listener_id=listener.id,
+                listener_ids=[listener.id],
                 trace=trace,
             )
             job_ids.append(job_id)

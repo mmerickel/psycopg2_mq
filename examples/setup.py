@@ -1,4 +1,5 @@
 import argparse
+from datetime import timedelta
 import logging
 import sqlalchemy as sa
 import sqlalchemy.orm
@@ -26,12 +27,20 @@ def main():
             'mq_job_complete.dummy.echo',
             'dummy',
             'listener_echo',
-            {'source': 'listener-1'},
+            {'source': 'echo-listener'},
+            cursor_key='echo-listener',
+            collapse_on_cursor=True,
+            when=timedelta(seconds=30),
         )
         print('listener', listener)
 
         schedule = source.add_schedule(
-            'dummy', 'echo', {'source': 'schedule-1'}, rrule='FREQ=MINUTELY'
+            'dummy', 'echo', {'source': 'minutely'}, rrule='FREQ=MINUTELY'
+        )
+        print('schedule', schedule)
+
+        schedule = source.add_schedule(
+            'dummy', 'echo', {'source': 'secondly'}, rrule='FREQ=SECONDLY;INTERVAL=15'
         )
         print('schedule', schedule)
         db.commit()

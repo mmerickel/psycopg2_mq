@@ -65,7 +65,11 @@ def test_listener_integration(model, dbsession, worker_proxy):
             },
         }
 
-        job = source.query_jobs.filter_by(listener_id=listener_id).one()
+        job = (
+            source.query_jobs.join(model.JobListenerLink)
+            .filter(model.JobListenerLink.listener_id == listener_id)
+            .one()
+        )
         assert job.queue == 'listener'
         assert job.method == 'listener_echo'
         assert job.args == {'a': 1, 'event': expected_event}
@@ -104,6 +108,7 @@ class WorkerProxy:
             engine=self.dbengine,
             model=self.model,
             capture_signals=False,
+            timeout=10,
             **kw,
         )
         self.thread = threading.Thread(target=self.worker.run)
