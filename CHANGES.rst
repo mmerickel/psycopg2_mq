@@ -4,6 +4,13 @@ Changes
 0.12 (2024-10-27)
 -----------------
 
+- Support a job being linked properly to multiple schedule and listener sources such
+  that provenance is properly tracked on retries.
+
+- Add a new ``CANCELED`` job state that can be used to manually mark any pending,
+  failed, or lost jobs as canceled. Jobs do not enter this state automatically - theyt
+  must be manually marked but will be useful to disambiguate failed from canceled.
+
 - [breaking] ``job.schedule_id`` is removed from the job object passed to background
   workers.
 
@@ -19,6 +26,11 @@ Changes
 
     alter table mq_job drop column schedule_id;
     alter table mq_job drop column listener_id;
+
+- [model migration] Add a new ``CANCELED`` state to the ``mq_job_state`` enum.
+  Possible migration::
+
+    alter type mq_job_state add value 'canceled';
 
 0.11 (2024-10-27)
 -----------------

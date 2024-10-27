@@ -225,10 +225,14 @@ class MQSource:
     def query_jobs(self):
         return self.dbsession.query(self.model.Job)
 
-    def find_job(self, job_id, *, for_update=False):
+    def get_job(self, job_id, *, for_update=False, raises=True):
         if not for_update:
-            return self.dbsession.get(self.model.Job, job_id)
-        return self.query_jobs.filter_by(id=job_id).with_for_update().one()
+            job = self.dbsession.get(self.model.Job, job_id)
+        else:
+            job = self.query_jobs.filter_by(id=job_id).with_for_update().one_or_none()
+        if not job and raises:
+            raise LookupError('cannot find job', job_id)
+        return job
 
     def retry_job(self, job_id, *, now=None):
         """
@@ -241,8 +245,8 @@ class MQSource:
         if now is None:
             now = datetime.utcnow()
 
-        job = self.find_job(job_id)
-        if job is None or job.state not in {
+        job = self.get_job(job_id)
+        if job.state not in {
             self.model.JobStates.COMPLETED,
             self.model.JobStates.FAILED,
             self.model.JobStates.LOST,
@@ -258,7 +262,10 @@ class MQSource:
         if self.model.JobScheduleLink is not None:
             kw['schedule_ids'] = [link.schedule_id for link in job.schedule_links]
 
-        return self.call(
+        trace = deepcopy(job.trace or {})
+        trace['mq_source_job_id'] = job_id
+
+        new_job_id = self.call(
             job.queue,
             job.method,
             job.args,
@@ -266,9 +273,10 @@ class MQSource:
             when=job.scheduled_time,
             cursor_key=job.cursor_key,
             collapse_on_cursor=False,
-            trace=job.trace,
+            trace=trace,
             **kw,
         )
+        return new_job_id
 
     def fail_lost_job(self, job_id, *, now=None):
         """
@@ -278,12 +286,38 @@ class MQSource:
         if now is None:
             now = datetime.utcnow()
 
-        job = self.find_job(job_id, for_update=True)
-        if job is None or job.state != self.model.JobStates.LOST:
+        job = self.get_job(job_id, for_update=True)
+        if job.state != self.model.JobStates.LOST:
             raise RuntimeError('job is not in a lost state')
 
         job.state = self.model.JobStates.FAILED
-        job.end_time = now
+        if job.end_time is None:
+            job.end_time = now
+
+    def cancel_job(self, job_id, *, result=None, now=None):
+        """
+        Cancel a job.
+
+        It must be ``PENDING``, ``FAILED``, or ``LOST``.
+
+        """
+        if now is None:
+            now = datetime.utcnow()
+
+        job = self.get_job(job_id, for_update=True)
+        if job.state not in {
+            self.model.JobStates.LOST,
+            self.model.JobStates.PENDING,
+            self.model.JobStates.FAILED,
+        }:
+            raise RuntimeError('job is not in a valid state')
+
+        job.state = self.model.JobStates.CANCELED
+        if result is not None:
+            job.result = result
+        if job.end_time is None:
+            job.end_time = now
+        log.info('marked job=%s canceled', job_id)
 
     def reload_scheduler(self, queue, *, now=None):
         """

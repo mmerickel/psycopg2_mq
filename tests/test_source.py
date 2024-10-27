@@ -16,7 +16,7 @@ def test_simple_call(model, dbsession):
     assert job.method == 'echo'
     assert job.args == {'message': 'hello world'}
 
-    job2 = source.find_job(job_id)
+    job2 = source.get_job(job_id)
     assert job is job2
 
 
@@ -42,7 +42,7 @@ def test_call_collapses_on_cursor(model, dbsession):
 
     assert job_id == job2_id
 
-    job = source.find_job(job_id)
+    job = source.get_job(job_id)
     assert job.args == {'message': 'hello world original'}
 
 
@@ -61,7 +61,7 @@ def test_retry_failed_job(model, dbsession):
     source = MQSource(dbsession=dbsession, model=model)
     with dbsession.begin():
         job_id = source.call('dummy', 'echo', {'message': 'hello world'})
-        job = source.find_job(job_id)
+        job = source.get_job(job_id)
         job.state = model.JobStates.FAILED
         job.start_time = datetime.utcnow()
         job.end_time = datetime.utcnow()
@@ -69,7 +69,10 @@ def test_retry_failed_job(model, dbsession):
     job2_id = source.retry_job(job_id)
     assert job2_id != job_id
 
-    job = source.find_job(job2_id)
+    job = source.get_job(job_id)
+    assert job.state == model.JobStates.FAILED
+
+    job = source.get_job(job2_id)
     assert job.state == model.JobStates.PENDING
     assert job.queue == 'dummy'
     assert job.method == 'echo'

@@ -37,6 +37,7 @@ class JobStates:
     RUNNING = 'running'
     COMPLETED = 'completed'
     FAILED = 'failed'
+    CANCELED = 'canceled'
     LOST = 'lost'
 
 
@@ -48,6 +49,7 @@ def make_default_model(metadata, JobStates=JobStates):
         JobStates.RUNNING,
         JobStates.COMPLETED,
         JobStates.FAILED,
+        JobStates.CANCELED,
         JobStates.LOST,
         metadata=metadata,
         name='mq_job_state',
