@@ -9,10 +9,11 @@ from sqlalchemy.types import BigInteger, Boolean, DateTime, Enum, Integer, Text
 class Model:
     channel_prefix = 'mq_'
 
-    def __init__(self, Job, JobStates, JobCursor, JobSchedule, Lock):
+    def __init__(self, Job, JobStates, JobCursor, JobListener, JobSchedule, Lock):
         self.Job = Job
         self.JobStates = JobStates
         self.JobCursor = JobCursor
+        self.JobListener = JobListener
         self.JobSchedule = JobSchedule
         self.Lock = Lock
 
@@ -61,6 +62,12 @@ def make_default_model(metadata, JobStates=JobStates):
         )
         schedule = relationship(lambda: JobSchedule, back_populates='jobs')
 
+        listener_id = Column(
+            ForeignKey('mq_job_listener.id', ondelete='cascade', onupdate='cascade'),
+            index=True,
+        )
+        listener = relationship(lambda: JobListener, back_populates='jobs')
+
         cursor_key = Column(Text)
         cursor_snapshot = Column(pg.JSONB)
         collapsible = Column(Boolean)
@@ -107,6 +114,7 @@ def make_default_model(metadata, JobStates=JobStates):
                 ', method="{0.method}"'
                 ', cursor_key="{0.cursor_key}"'
                 ', schedule_id={0.schedule_id}'
+                ', listener_id={0.listener_id}'
                 ')>'
             ).format(self)
 
@@ -122,6 +130,46 @@ def make_default_model(metadata, JobStates=JobStates):
 
         def __repr__(self):
             return f'<JobCursor(key="{self.key}")>'
+
+    class JobListener(Base):
+        __tablename__ = 'mq_job_listener'
+
+        id = Column(BigInteger, primary_key=True)
+
+        created_time = Column(DateTime, nullable=False)
+
+        is_enabled = Column(Boolean, nullable=False)
+
+        event = Column(Text, nullable=False, index=True)
+
+        queue = Column(Text, nullable=False, index=True)
+        method = Column(Text, nullable=False)
+        args = Column(pg.JSONB, nullable=False)
+
+        context_arg_key = Column(Text, nullable=False)
+
+        # a duration in the future when the job should execute
+        # relative to the event time, supports anything that the postgres
+        # interval type can parse
+        when = Column(pg.INTERVAL)
+
+        cursor_key = Column(Text)
+        collapse_on_cursor = Column(Boolean)
+
+        jobs = relationship(lambda: Job, back_populates='listener')
+
+        def __repr__(self):
+            return (
+                '<JobListener('
+                'event="{0.event}"'
+                ', queue="{0.queue}"'
+                ', method="{0.method}"'
+                ', when="{0.when}"'
+                ', cursor_key="{0.cursor_key}"'
+                ', collapse_on_cursor={0.collapse_on_cursor}'
+                ', is_enabled={0.is_enabled}'
+                '>'.format(self)
+            )
 
     class JobSchedule(Base):
         __tablename__ = 'mq_job_schedule'
@@ -170,4 +218,4 @@ def make_default_model(metadata, JobStates=JobStates):
         def __repr__(self):
             return '<Lock(queue="{0.queue}", key="{0.key}">'.format(self)
 
-    return Model(Job, JobStates, JobCursor, JobSchedule, Lock)
+    return Model(Job, JobStates, JobCursor, JobListener, JobSchedule, Lock)

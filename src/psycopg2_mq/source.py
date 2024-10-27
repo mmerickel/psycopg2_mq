@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime
 import json
 import sqlalchemy as sa
@@ -34,6 +35,7 @@ class MQSource:
         collapse_on_cursor=None,
         conflict_resolver=None,
         schedule_id=None,
+        listener_id=None,
         trace=None,
     ):
         """
@@ -93,6 +95,7 @@ class MQSource:
                         Job.state: JobStates.PENDING,
                         Job.cursor_key: cursor_key,
                         Job.schedule_id: schedule_id,
+                        Job.listener_id: listener_id,
                         Job.collapsible: collapse_on_cursor,
                         Job.trace: trace,
                         **job_kwargs,
@@ -115,6 +118,14 @@ class MQSource:
                         queue,
                         method,
                         schedule_id,
+                    )
+                elif listener_id is not None:
+                    log.info(
+                        'created new job=%s on queue=%s, method=%s from listener=%s',
+                        job_id,
+                        queue,
+                        method,
+                        listener_id,
                     )
                 else:
                     log.info(
@@ -279,6 +290,7 @@ class MQSource:
             **schedule_kwargs,
         )
         self.dbsession.add(schedule)
+        self.dbsession.flush()
 
         if reload:
             self.reload_scheduler(queue, now=schedule.next_execution_time)
@@ -363,3 +375,143 @@ class MQSource:
                 self.reload_scheduler(schedule.queue, now=schedule.next_execution_time)
 
         return job_id
+
+    def add_listener(
+        self,
+        event,
+        queue,
+        method,
+        args,
+        *,
+        is_enabled=True,
+        context_arg_key=None,
+        cursor_key=None,
+        collapse_on_cursor=None,
+        listener_kwargs=None,
+        now=None,
+    ):
+        """
+        Add a new listener that can dispatch jobs when an event is emitted.
+
+        """
+        if now is None:
+            now = datetime.utcnow()
+        if args is None:
+            args = {}
+        if listener_kwargs is None:
+            listener_kwargs = {}
+
+        if collapse_on_cursor is None and cursor_key:
+            collapse_on_cursor = True
+
+        if collapse_on_cursor and not cursor_key:
+            raise ValueError(
+                'cannot collapse jobs from a schedule that is not using a cursor'
+            )
+
+        if not context_arg_key:
+            context_arg_key = 'events' if collapse_on_cursor else 'event'
+
+        listener = self.model.JobListener(
+            event=event,
+            queue=queue,
+            method=method,
+            args=args,
+            context_arg_key=context_arg_key,
+            is_enabled=is_enabled,
+            cursor_key=cursor_key,
+            collapse_on_cursor=collapse_on_cursor,
+            created_time=now,
+            **listener_kwargs,
+        )
+        self.dbsession.add(listener)
+        self.dbsession.flush()
+
+        return listener
+
+    @property
+    def query_listeners(self):
+        return self.dbsession.query(self.model.JobListener)
+
+    def get_listener(self, listener_id, *, for_update=False):
+        q = self.query_listeners.filter_by(id=listener_id)
+        if for_update:
+            q = q.with_for_update()
+        return q.one()
+
+    def disable_listener(self, listener_id):
+        """
+        Disable a listener preventing any further jobs from being automatically
+        dispatched.
+
+        """
+        listener = self.get_listener(listener_id, for_update=True)
+        if not listener.is_enabled:
+            log.info('listener=%s is already disabled', listener_id)
+            return
+        listener.is_enabled = False
+        log.debug('disabled listener=%s', listener_id)
+
+    def enable_listener(self, listener_id, *, now=None):
+        """Enable a listener for execution when the next event is dispatched."""
+        if now is None:
+            now = datetime.utcnow()
+        listener = self.get_listener(listener_id, for_update=True)
+        if listener.is_enabled:
+            log.info('listener=%s is already enabled', listener_id)
+            return
+        listener.is_enabled = True
+        log.debug('enabling listener=%s', listener_id)
+
+    def emit_event(self, name, data, *, now=None, trace=None):
+        if now is None:
+            now = datetime.utcnow()
+
+        job_ids = []
+        for listener in self.query_listeners.filter(
+            self.model.JobListener.event == name,
+            self.model.JobListener.is_enabled,
+        ):
+            when = now
+            if listener.when is not None:
+                when += listener.when
+
+            arg_key = listener.context_arg_key
+
+            event = {
+                'event': name,
+                'listener_id': listener.id,
+                'data': data,
+            }
+
+            if listener.collapse_on_cursor:
+                job_args = {
+                    arg_key: [event],
+                    **listener.args,
+                }
+
+                def conflict_resolver(job, arg_key=arg_key, event=event):
+                    job.args = deepcopy(job.args)
+                    job.args.setdefault(arg_key, []).append(event)
+
+            else:
+                conflict_resolver = None
+                job_args = {
+                    arg_key: event,
+                    **listener.args,
+                }
+
+            job_id = self.call(
+                queue=listener.queue,
+                method=listener.method,
+                args=job_args,
+                cursor_key=listener.cursor_key,
+                collapse_on_cursor=listener.collapse_on_cursor,
+                conflict_resolver=conflict_resolver,
+                now=now,
+                when=when,
+                listener_id=listener.id,
+                trace=trace,
+            )
+            job_ids.append(job_id)
+        return job_ids
