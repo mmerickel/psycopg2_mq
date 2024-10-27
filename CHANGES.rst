@@ -4,6 +4,8 @@ Changes
 unreleased
 ----------
 
+- Add support for Python 3.13.
+
 - [model migration] Add ``collapse_on_cursor`` attribute to
   the ``JobSchedule`` model.
 
