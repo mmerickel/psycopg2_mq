@@ -4,6 +4,9 @@ Changes
 0.12 (2024-10-27)
 -----------------
 
+- [breaking] ``job.schedule_id`` is removed from the job object passed to background
+  workers.
+
 - [model migration] Moved the ``schedule_id`` and ``listener_id`` foreign keys from
   the ``Job`` table to many-to-many link tables to support tracking the source properly
   when collapsing occurs. Possible migration::
