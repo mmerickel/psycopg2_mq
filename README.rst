@@ -121,7 +121,7 @@ To register a listener, look at the ``MQSource.add_listener(event, queue, method
 
 There is a default event emitted every time a job is completed. It has the format::
 
-  mq_job_complete:<queue>:<method>
+  mq_job_complete.<queue>.<method>
 
 You are free to emit your own events as well if you need different dimensions!
 
