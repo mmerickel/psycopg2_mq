@@ -85,7 +85,7 @@ class MQWorker:
         timeout=DEFAULT_TIMEOUT,
         jitter=DEFAULT_JITTER,
         lock_key=DEFAULT_LOCK_KEY,
-        threads=1,
+        threads=None,
         capture_signals=True,
         name=None,
         mq_source_factory=MQSource,
@@ -99,6 +99,9 @@ class MQWorker:
         self._timeout = timeout
         self._jitter = jitter
         self._lock_key = lock_key
+
+        if threads is None:
+            threads = os.cpu_count()
         self._threads = threads
         self._capture_signals = capture_signals
 
