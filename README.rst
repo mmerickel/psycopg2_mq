@@ -5,8 +5,8 @@ psycopg2_mq
 .. image:: https://img.shields.io/pypi/v/psycopg2_mq.svg
     :target: https://pypi.org/pypi/psycopg2_mq
 
-.. image:: https://github.com/mmerickel/psycopg2_mq/workflows/Build%20and%20test/badge.svg?branch=main
-    :target: https://github.com/mmerickel/psycopg2_mq/actions?query=workflow%3A%22Build+and+test%22
+.. image:: https://github.com/mmerickel/psycopg2_mq/actions/workflows/ci-tests.yml/badge.svg?branch=main
+    :target: https://github.com/mmerickel/psycopg2_mq/actions/workflows/ci-tests.yml?query=branch%3Amain
     :alt: main CI Status
 
 ``psycopg2_mq`` is a message queue implemented on top of
