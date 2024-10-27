@@ -57,28 +57,42 @@ add extra attributes to the object. This is useful in individual queues to
 define a contract between a queue and its methods.
 
 Cursors
--------
+~~~~~~~
 
-A ``Job`` can be scheduled with a ``cursor_key``. There can only be one
-pending job and one running job for any cursor. New jobs scheduled while
-another one is pending will be ignored and the pending job is returned.
+By defining a cursor you can execute jobs sequentially instead of in parallel.
+There can only be one running (or lost) job for any cursor at a time.
+
+A ``Job`` can be scheduled with a ``cursor_key``.
 
 A ``job.cursor`` dict is provided to the workers containing the cursor data,
 and is saved back to the database when the job is completed. This effectively
-gives jobs some persistent, shared state, and serializes all jobs over a given
-cursor.
+gives jobs some persistent, shared memory between jobs on the cursor.
+
+Because a "lost" job on the cursor counts as running, it will also block any other jobs from executing.
+To resolve this situation it is necessary for the lost job to be either marked as failed or retried.
+Look at ``MQSource.retry_job`` and ``MQSource.fail_lost_job`` APIs.
+
+Collapsible
+~~~~~~~~~~~
+
+When ``collapse_on_cursor`` is set to ``True`` on a job, this is declaring the job as "collapsible".
+There can only be one job in the "pending" state marked ``collapsible == True`` for the same ``queue``, ``method``, and ``cursor_key``.
+This means that if there is an existing "pending" job with the same ``cursor_key``, ``queue``, and ``method`` with ``collapsible == True`` then the new job will be "collapsed" into the existing job.
+By default, this typically means that the new job will be dropped because another job already exists.
+This means that the ``args`` should be "constant", because the new job's args are ignored.
+
+If the ``args`` are not constant, then you will likely want to pass a ``conflict_resolver`` callback.
+This is a function that will be invoked when a job already exists.
+You can then update the existing ``Job`` object in the "pending" state, adjusting the args etc.
 
 Delayed Jobs
-------------
+~~~~~~~~~~~~
 
-A ``Job`` can be delayed to run in the future by providing a ``datetime``
-object to the ``when`` argument. This, along with a cursor key, can provide a
-nice throttle on how frequently a job runs. For example, delay jobs to run
-in 30 seconds with a ``cursor_key`` and any jobs that are scheduled in the
-meantime will be dropped. The assumption here is that the arguments are
-constant and data for execution is in the cursor or another table. As a last
-resort, a ``conflict_resolver`` callback can be used to modify properties of
-the job when arguments cannot be constant.
+A ``Job`` can be delayed to run in the future by providing a ``datetime`` object to the ``when`` argument.
+When this feature is used with collapsible jobs you can create a highly efficient throttle greatly reducing the number of jobs that run in the background.
+For example, schedule 20 jobs all with the same ``cursor_key``, and ``collapse_on_cursor=True``, and ``when=timedelta(seconds=30)``.
+You will see only 1 job created and it will execute in 30 seconds.
+All of the other jobs are collapsed into this one instead of creating separate jobs.
 
 Schedules
 ---------
@@ -91,6 +105,29 @@ can be converted to this syntax for simpler scenarios.
 
 ``psycopg2-mq`` workers will automatically negotiate which worker is responsible
 for managing schedules so clustered workers should operate as expected.
+
+To register a new schedule, look at the ``MQSource.add_schedule(queue, method, args, *, rrule)`` API.
+
+If you set ``collapse_on_cursor`` is ``True`` on the schedule and there is already a job pending then the firing of the schedule is effectively a no-op.
+
+Events / Listeners
+------------------
+
+A ``JobListener`` can be defined which supports creating new jobs when events are
+emitted. When an event is emitted via ``MQSource.emit_event`` then any listeners
+matching this event will be used to create a new job in the system.
+
+To register a listener, look at the ``MQSource.add_listener(event, queue, method, args, ...)`` API.
+
+There is a default event emitted every time a job is completed. It has the format::
+
+  mq_job_complete:<queue>:<method>
+
+You are free to emit your own events as well if you need different dimensions!
+
+When ``collapse_on_cursor`` is ``False`` then the listener receives an ``event`` arg containing the ``name``, ``listener_id``, and ``data`` keys.
+
+If ``collapse_on_cursor`` is ``True`` on the listener then the resulting job will receive an ``events`` arg containing a list of all of the emitted events that occured while the job was in the "pending" state.
 
 Example Worker
 ==============

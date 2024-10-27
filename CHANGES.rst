@@ -9,7 +9,8 @@ unreleased
 - [model migration] Add a new ``JobListener`` model.
 
 - [model migration] Add ``collapse_on_cursor`` attribute to
-  the ``JobSchedule`` model.
+  the ``JobSchedule`` model. A bw-compat migration would set this value to ``True``
+  if ``cursor_key`` is ``True`` and ``False`` on everything else.
 
 - [model migration] Add ``listener_id`` foreign key to the ``Job`` model.
 
@@ -27,6 +28,11 @@ unreleased
 
 - Fix a bug in which NOTIFY events were missed in some cases causing jobs to wait
   until the maintenance window to execute.
+
+- [breaking] Modified the ``MQSource.call``, and ``MQSource.add_schedule`` APIs such
+  that when a cursor is used ``collapse_on_cursor`` defaults to ``False`` instead of
+  ``True``. You must explicitly set it to ``True`` in scenarios in which that is
+  desired as it is no longer the default behavior.
 
 0.10 (2023-08-06)
 ------------------

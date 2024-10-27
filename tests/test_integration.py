@@ -57,7 +57,7 @@ def test_listener_integration(model, dbsession, worker_proxy):
         assert job.end_time is not None
 
         expected_event = {
-            'event': 'mq_job_complete.dummy.echo',
+            'name': 'mq_job_complete.dummy.echo',
             'listener_id': listener_id,
             'data': {
                 'job_id': job.id,

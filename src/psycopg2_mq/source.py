@@ -32,7 +32,7 @@ class MQSource:
         now=None,
         job_kwargs=None,
         cursor_key=None,
-        collapse_on_cursor=None,
+        collapse_on_cursor=False,
         conflict_resolver=None,
         schedule_id=None,
         listener_id=None,
@@ -48,8 +48,7 @@ class MQSource:
             the ``conflict_resolver`` will be invoked with the existing job and
             the new request will be collapsed into the previous pending job.
 
-            By default, this is ``True`` when ``cursor_key`` is set. It is an
-            error to set it to ``True`` without using a cursor.
+            By default this is always ``False``.
 
         :param conflict_resolver:
             A callable that accepts the old job as its only argument. This will
@@ -69,9 +68,6 @@ class MQSource:
 
         Job = self.model.Job
         JobStates = self.model.JobStates
-
-        if collapse_on_cursor is None and cursor_key:
-            collapse_on_cursor = True
 
         if collapse_on_cursor and not cursor_key:
             raise ValueError('cannot collapse a job that is not using a cursor')
@@ -189,10 +185,12 @@ class MQSource:
     def query_jobs(self):
         return self.dbsession.query(self.model.Job)
 
-    def find_job(self, job_id):
-        return self.dbsession.get(self.model.Job, job_id)
+    def find_job(self, job_id, *, for_update=False):
+        if not for_update:
+            return self.dbsession.get(self.model.Job, job_id)
+        return self.query_jobs.filter_by(id=job_id).with_for_update().one()
 
-    def retry_job(self, job_id):
+    def retry_job(self, job_id, *, now=None):
         """
         Retry a job.
 
@@ -200,6 +198,9 @@ class MQSource:
         failed or lost.
 
         """
+        if now is None:
+            now = datetime.utcnow()
+
         job = self.find_job(job_id)
         if job is None or job.state not in {
             self.model.JobStates.COMPLETED,
@@ -212,16 +213,35 @@ class MQSource:
                 'cannot automatically retry a collapsible job, instead'
                 ' reinvoke call() with an appropriate conflict_resolver'
             )
+        if job.state == self.model.JobStates.LOST:
+            self.fail_lost_job(job_id, now=now)
+
         return self.call(
             job.queue,
             job.method,
             job.args,
+            now=now,
             when=job.scheduled_time,
             cursor_key=job.cursor_key,
             schedule_id=job.schedule_id,
             collapse_on_cursor=False,
             trace=job.trace,
         )
+
+    def fail_lost_job(self, job_id, *, now=None):
+        """
+        Mark a lost job as failed.
+
+        """
+        if now is None:
+            now = datetime.utcnow()
+
+        job = self.find_job(job_id, for_update=True)
+        if job is None or job.state != self.model.JobStates.LOST:
+            raise RuntimeError('job is not in a lost state')
+
+        job.state = self.model.JobStates.FAILED
+        job.end_time = now
 
     def reload_scheduler(self, queue, *, now=None):
         """
@@ -251,7 +271,7 @@ class MQSource:
         rrule,
         is_enabled=True,
         cursor_key=None,
-        collapse_on_cursor=None,
+        collapse_on_cursor=False,
         schedule_kwargs=None,
         now=None,
         reload=True,
@@ -266,9 +286,6 @@ class MQSource:
             args = {}
         if schedule_kwargs is None:
             schedule_kwargs = {}
-
-        if collapse_on_cursor is None and cursor_key:
-            collapse_on_cursor = True
 
         if collapse_on_cursor and not cursor_key:
             raise ValueError(
@@ -386,7 +403,7 @@ class MQSource:
         is_enabled=True,
         context_arg_key=None,
         cursor_key=None,
-        collapse_on_cursor=None,
+        collapse_on_cursor=False,
         listener_kwargs=None,
         now=None,
     ):
@@ -400,9 +417,6 @@ class MQSource:
             args = {}
         if listener_kwargs is None:
             listener_kwargs = {}
-
-        if collapse_on_cursor is None and cursor_key:
-            collapse_on_cursor = True
 
         if collapse_on_cursor and not cursor_key:
             raise ValueError(
@@ -479,7 +493,7 @@ class MQSource:
             arg_key = listener.context_arg_key
 
             event = {
-                'event': name,
+                'name': name,
                 'listener_id': listener.id,
                 'data': data,
             }

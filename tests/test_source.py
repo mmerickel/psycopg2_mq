@@ -6,10 +6,10 @@ from psycopg2_mq import MQSource
 
 def test_simple_call(model, dbsession):
     source = MQSource(dbsession=dbsession, model=model)
-    job_id = source.call('dummy', 'echo', {'message': 'hello world'})
-    dbsession.commit()
+    with dbsession.begin():
+        job_id = source.call('dummy', 'echo', {'message': 'hello world'})
 
-    jobs = dbsession.query(model.Job).all()
+    jobs = source.query_jobs.all()
     assert len(jobs) == 1
     job = jobs[0]
     assert job.queue == 'dummy'
@@ -22,15 +22,23 @@ def test_simple_call(model, dbsession):
 
 def test_call_collapses_on_cursor(model, dbsession):
     source = MQSource(dbsession=dbsession, model=model)
-    job_id = source.call(
-        'dummy', 'echo', {'message': 'hello world original'}, cursor_key='foo'
-    )
-    dbsession.commit()
+    with dbsession.begin():
+        job_id = source.call(
+            'dummy',
+            'echo',
+            {'message': 'hello world original'},
+            cursor_key='foo',
+            collapse_on_cursor=True,
+        )
 
-    job2_id = source.call(
-        'dummy', 'echo', {'message': 'hello world again'}, cursor_key='foo'
-    )
-    dbsession.commit()
+    with dbsession.begin():
+        job2_id = source.call(
+            'dummy',
+            'echo',
+            {'message': 'hello world again'},
+            cursor_key='foo',
+            collapse_on_cursor=True,
+        )
 
     assert job_id == job2_id
 
@@ -40,8 +48,8 @@ def test_call_collapses_on_cursor(model, dbsession):
 
 def test_retry_error(model, dbsession):
     source = MQSource(dbsession=dbsession, model=model)
-    job_id = source.call('dummy', 'echo', {'message': 'hello world'})
-    dbsession.commit()
+    with dbsession.begin():
+        job_id = source.call('dummy', 'echo', {'message': 'hello world'})
 
     with pytest.raises(RuntimeError) as ex:
         source.retry_job(job_id)
@@ -51,12 +59,12 @@ def test_retry_error(model, dbsession):
 
 def test_retry_failed_job(model, dbsession):
     source = MQSource(dbsession=dbsession, model=model)
-    job_id = source.call('dummy', 'echo', {'message': 'hello world'})
-    job = source.find_job(job_id)
-    job.state = model.JobStates.FAILED
-    job.start_time = datetime.utcnow()
-    job.end_time = datetime.utcnow()
-    dbsession.commit()
+    with dbsession.begin():
+        job_id = source.call('dummy', 'echo', {'message': 'hello world'})
+        job = source.find_job(job_id)
+        job.state = model.JobStates.FAILED
+        job.start_time = datetime.utcnow()
+        job.end_time = datetime.utcnow()
 
     job2_id = source.retry_job(job_id)
     assert job2_id != job_id
