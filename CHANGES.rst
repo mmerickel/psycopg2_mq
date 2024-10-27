@@ -6,15 +6,23 @@ unreleased
 
 - Add support for Python 3.13.
 
-- [model migration] Add a new ``JobListener`` model.
+- [breaking] Modified the ``MQSource.call``, and ``MQSource.add_schedule`` APIs such
+  that when a cursor is used ``collapse_on_cursor`` defaults to ``False`` instead of
+  ``True``. You must explicitly set it to ``True`` in scenarios in which that is
+  desired as it is no longer the default behavior.
 
 - [model migration] Add ``collapse_on_cursor`` attribute to
-  the ``JobSchedule`` model. A bw-compat migration would set this value to ``True``
-  if ``cursor_key`` is ``True`` and ``False`` on everything else.
+  the ``JobSchedule`` model. A bw-compat migration would set this value to ``False``
+  if ``cursor_key`` is ``NULL`` and ``True`` on everything else.
+
+- [model migration] Add a new ``JobListener`` model.
 
 - [model migration] Add ``listener_id`` foreign key to the ``Job`` model.
 
-- Add the concept of pub/sub events. Listeners can be registered that act as a
+- Fix a bug in which NOTIFY events were missed in some cases causing jobs to wait
+  until the maintenance window to execute.
+
+- Add the concept of pub/sub event listeners. Listeners can be registered that act as a
   job factory, creating a new job when an event is emitted.
 
   It is possible to emit events manually as needed via the ``MQSource.emit_event`` API.
@@ -25,14 +33,6 @@ unreleased
 
 - The ``MQSource`` that is used by the ``MQWorker`` can now be overridden via the
   ``mq_source_factory`` option.
-
-- Fix a bug in which NOTIFY events were missed in some cases causing jobs to wait
-  until the maintenance window to execute.
-
-- [breaking] Modified the ``MQSource.call``, and ``MQSource.add_schedule`` APIs such
-  that when a cursor is used ``collapse_on_cursor`` defaults to ``False`` instead of
-  ``True``. You must explicitly set it to ``True`` in scenarios in which that is
-  desired as it is no longer the default behavior.
 
 0.10 (2023-08-06)
 ------------------
