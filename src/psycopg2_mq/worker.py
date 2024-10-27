@@ -67,10 +67,10 @@ class JobContext:
 class FailedJobError(Exception):
     message = 'Job execution manually aborted.'
 
-    def __init__(self, result, should_update_cursor=False):
+    def __init__(self, result, *, update_cursor=False):
         super().__init__(self.message)
         self.result = result
-        self.should_update_cursor = should_update_cursor
+        self.update_cursor = update_cursor
 
 
 class MQWorker:
@@ -685,7 +685,7 @@ def finish_jobs(ctx):
                     job.id,
                     False,
                     error.result,
-                    job.cursor if error.should_update_cursor else None,
+                    job.cursor if error.update_cursor else None,
                 )
 
             else:
