@@ -29,21 +29,15 @@ class MQSource:
         *,
         when=None,
         now=None,
-        cursor_key=None,
         job_kwargs=None,
+        cursor_key=None,
+        collapse_on_cursor=None,
         conflict_resolver=None,
         schedule_id=None,
-        collapse_on_cursor=None,
         trace=None,
     ):
         """
         Dispatch a new job.
-
-        :param conflict_resolver:
-            A callable that accepts the old job as its only argument. This will
-            be invoked if ``collapse_on_cursor`` is ``True`` and a job already
-            exists. The callable can modify the job object prior to returning
-            to update any arguments prior to it running.
 
         :param collapse_on_cursor:
             If set to ``False``, then new jobs will always be created.
@@ -54,6 +48,12 @@ class MQSource:
 
             By default, this is ``True`` when ``cursor_key`` is set. It is an
             error to set it to ``True`` without using a cursor.
+
+        :param conflict_resolver:
+            A callable that accepts the old job as its only argument. This will
+            be invoked if ``collapse_on_cursor`` is ``True`` and a job already
+            exists. The callable can modify the job object prior to returning
+            to update any arguments prior to it running.
 
         """
         if now is None:
@@ -175,11 +175,11 @@ class MQSource:
         return job_id
 
     @property
-    def query_job(self):
+    def query_jobs(self):
         return self.dbsession.query(self.model.Job)
 
     def find_job(self, job_id):
-        return self.query_job.get(job_id)
+        return self.dbsession.get(self.model.Job, job_id)
 
     def retry_job(self, job_id):
         """
@@ -286,11 +286,11 @@ class MQSource:
         return schedule
 
     @property
-    def query_schedule(self):
+    def query_schedules(self):
         return self.dbsession.query(self.model.JobSchedule)
 
     def get_schedule(self, schedule_id, *, for_update=False):
-        q = self.query_schedule.filter_by(id=schedule_id)
+        q = self.query_schedules.filter_by(id=schedule_id)
         if for_update:
             q = q.with_for_update()
         return q.one()

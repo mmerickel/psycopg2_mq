@@ -7,6 +7,9 @@ unreleased
 - [model migration] Add ``collapse_on_cursor`` attribute to
   the ``JobSchedule`` model.
 
+- The ``MQSource`` that is used by the ``MQWorker`` can now be overridden via the
+  ``mq_source_factory`` option.
+
 0.10 (2023-08-06)
 ------------------
 

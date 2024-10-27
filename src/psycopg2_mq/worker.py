@@ -88,6 +88,7 @@ class MQWorker:
         threads=1,
         capture_signals=True,
         name=None,
+        mq_source_factory=MQSource,
     ):
         self._engine = engine
         self._queues = queues
@@ -118,6 +119,8 @@ class MQWorker:
         self._pool = None
         self._active_jobs = {}
         self._scheduler_queues = set()
+
+        self._mq_source_factory = mq_source_factory
 
     def shutdown_gracefully(self):
         self._running = False
@@ -784,7 +787,7 @@ def apply_schedules(ctx, *, now=None, db, model):
     if now is None:
         now = ctx._now()
 
-    mq_source = MQSource(dbsession=db, model=model)
+    mq_source = ctx._mq_source_factory(dbsession=db, model=model)
     schedules = (
         db.query(model.JobSchedule)
         .with_for_update(of=model.JobSchedule, skip_locked=True)
