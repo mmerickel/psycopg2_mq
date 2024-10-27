@@ -6,8 +6,21 @@ unreleased
 
 - Add support for Python 3.13.
 
+- [model migration] Add a new ``JobListener`` model.
+
 - [model migration] Add ``collapse_on_cursor`` attribute to
   the ``JobSchedule`` model.
+
+- [model migration] Add ``listener_id`` foreign key to the ``Job`` model.
+
+- Add the concept of pub/sub events. Listeners can be registered that act as a
+  job factory, creating a new job when an event is emitted.
+
+  It is possible to emit events manually as needed via the ``MQSource.emit_event`` API.
+
+  Events are emitted automatically when a job is completed. Every job when it is
+  completed successfully emits a new ``mq_job_complete:<queue>.<method>`` event.
+  This event contains the result of the job.
 
 - The ``MQSource`` that is used by the ``MQWorker`` can now be overridden via the
   ``mq_source_factory`` option.

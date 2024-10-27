@@ -27,6 +27,7 @@ jobs:
                 pg-version:
                     - "12"
                     - "14"
+                    - "16"
                 exclude:
                     # Linux and macOS don't have x86 python
                     - os: "ubuntu-22.04"

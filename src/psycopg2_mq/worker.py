@@ -538,6 +538,16 @@ def finish_job(ctx, job_id, success, result, cursor, *, db, model):
     job.lock_id = None
     log.info('finished processing job=%s, state="%s"', job_id, job.state)
 
+    if success:
+        mq_source = ctx._mq_source_factory(dbsession=db, model=model)
+        mq_source.emit_event(
+            f'mq_job_complete.{job.queue}.{job.method}',
+            {
+                'job_id': job_id,
+                'result': result,
+            },
+        )
+
 
 def save_cursor(db, model, key, cursor, job_id=None):
     if cursor is None:

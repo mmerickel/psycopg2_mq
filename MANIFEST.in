@@ -1,6 +1,7 @@
 graft src
 graft tests
 graft .github
+graft examples
 
 include README.rst
 include CHANGES.rst

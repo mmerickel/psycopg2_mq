@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import pytest
 import threading
 import time
@@ -5,7 +6,7 @@ import time
 from psycopg2_mq import MQSource, MQWorker
 
 
-def test_integration(model, dbsession, worker_proxy):
+def test_simple_integration(model, dbsession, worker_proxy):
     worker_proxy.start(
         queues={
             'dummy': DummyQueue(),
@@ -16,26 +17,69 @@ def test_integration(model, dbsession, worker_proxy):
     with dbsession.begin():
         job_id = source.call('dummy', 'echo', {'message': 'hello world'})
 
-    while True:
-        with dbsession.begin():
-            job = source.find_job(job_id)
-            if job.state in {
-                model.JobStates.COMPLETED,
-                model.JobStates.FAILED,
-                model.JobStates.LOST,
-            }:
-                break
-            time.sleep(0.1)
+    with wait_for_job(source, job_id) as job:
+        assert job.state == model.JobStates.COMPLETED
+        assert job.result == {
+            'queue': 'dummy',
+            'method': 'echo',
+            'args': {'message': 'hello world'},
+        }
+        assert job.start_time is not None
+        assert job.end_time is not None
 
-    job = source.find_job(job_id)
-    assert job.state == model.JobStates.COMPLETED
-    assert job.result == {
-        'queue': 'dummy',
-        'method': 'echo',
-        'args': {'message': 'hello world'},
-    }
-    assert job.start_time is not None
-    assert job.end_time is not None
+
+def test_listener_integration(model, dbsession, worker_proxy):
+    worker_proxy.start(
+        queues={
+            'dummy': DummyQueue(),
+            'listener': DummyQueue(),
+        },
+        threads=2,
+    )
+
+    source = MQSource(dbsession=dbsession, model=model)
+    with dbsession.begin():
+        listener = source.add_listener(
+            'mq_job_complete.dummy.echo', 'listener', 'listener_echo', {'a': 1}
+        )
+        listener_id = listener.id
+
+        job_id = source.call('dummy', 'echo', {'message': 'hello world'})
+
+    with wait_for_job(source, job_id) as job:
+        assert job.state == model.JobStates.COMPLETED
+        assert job.result == {
+            'queue': 'dummy',
+            'method': 'echo',
+            'args': {'message': 'hello world'},
+        }
+        assert job.start_time is not None
+        assert job.end_time is not None
+
+        expected_event = {
+            'event': 'mq_job_complete.dummy.echo',
+            'listener_id': listener_id,
+            'data': {
+                'job_id': job.id,
+                'result': job.result,
+            },
+        }
+
+        job = source.query_jobs.filter_by(listener_id=listener_id).one()
+        assert job.queue == 'listener'
+        assert job.method == 'listener_echo'
+        assert job.args == {'a': 1, 'event': expected_event}
+        job_id = job.id
+
+    with wait_for_job(source, job_id) as job:
+        assert job.state == model.JobStates.COMPLETED
+        assert job.result == {
+            'queue': 'listener',
+            'method': 'listener_echo',
+            'args': {'a': 1, 'event': expected_event},
+        }
+        assert job.start_time is not None
+        assert job.end_time is not None
 
 
 class DummyQueue:
@@ -79,3 +123,21 @@ def worker_proxy(model, dbengine):
         yield proxy
     finally:
         proxy.stop()
+
+
+@contextmanager
+def wait_for_job(source, job_id, *, max_wait=60):
+    start = time.time()
+    while True:
+        if time.time() - start > max_wait:  # pragma: nocover
+            raise Exception('timeout while waiting for job to finish', job_id)
+        with source.dbsession.begin():
+            job = source.find_job(job_id)
+            if job.state in {
+                source.model.JobStates.COMPLETED,
+                source.model.JobStates.FAILED,
+                source.model.JobStates.LOST,
+            }:
+                yield job
+                break
+            time.sleep(0.1)
