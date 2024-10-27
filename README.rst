@@ -166,17 +166,16 @@ Example Source
 
 .. code-block:: python
 
-    engine = create_engine()
+    engine = create_engine('postgresql+psycopg2://...')
     metadata = MetaData()
     model = make_default_model(metadata)
-    session_factory = sessionmaker()
-    session_factory.configure(bind=engine)
+    metadata.create_all(engine)
+    session_factory = sessionmaker(engine)
 
-    dbsession = session_factory()
-    with dbsession.begin():
+    with session_factory.begin():
         mq = MQSource(
             dbsession=dbsession,
             model=model,
         )
-        job = mq.call('echo', 'hello', {'name': 'Andy'})
-        print(f'queued job={job.id}')
+        job_id = mq.call('echo', 'hello', {'name': 'Andy'})
+        print(f'queued job={job_id}')
