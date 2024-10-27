@@ -12,6 +12,9 @@ unreleased
 - The ``MQSource`` that is used by the ``MQWorker`` can now be overridden via the
   ``mq_source_factory`` option.
 
+- Fix a bug in which NOTIFY events were missed in some cases causing jobs to wait
+  until the maintenance window to execute.
+
 0.10 (2023-08-06)
 ------------------
 

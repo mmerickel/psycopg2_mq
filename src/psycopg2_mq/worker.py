@@ -271,11 +271,12 @@ def rotate_dbconn(ctx):
     if ctx._dbconn is not None:
         ctx._dbconn.close()
 
-    conn = ctx._dbconn = ctx._engine.connect()
-    conn.detach()
-    conn.execution_options(autocommit=True)
+    conn = ctx._engine.connect()
     assert conn.dialect.driver == 'psycopg2'
-    curs = conn.connection.cursor()
+    conn.detach()
+    conn = ctx._dbconn = conn.connection.dbapi_connection
+    conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+    curs = conn.cursor()
     for queue in ctx._queues.keys():
         curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
     ctx._connect_time = ctx._now()
@@ -329,8 +330,7 @@ def dbsession(fn):
             kwargs.setdefault('model', ctx._model)
             return fn(ctx, *args, **kwargs)
         # open a new session and commit/rollback when complete
-        with ctx._dbconn.begin():
-            db = Session(bind=ctx._dbconn)
+        with Session(ctx._engine) as db:
             try:
                 kwargs['db'] = db
                 kwargs['model'] = ctx._model
@@ -905,7 +905,7 @@ def handle_notifies(ctx, conn):
 
 
 def get_next_event(ctx):
-    conn = ctx._dbconn.connection
+    conn = ctx._dbconn
 
     rlist = [ctx._job_trigger]
     if ctx._running:
