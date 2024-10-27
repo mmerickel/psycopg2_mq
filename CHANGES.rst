@@ -19,8 +19,8 @@ Changes
 - [breaking] Prevent retrying of collapsible jobs. Require them to be invoked
   using ``call`` instead for an opportunity to specify a ``conflict_resolver``.
 
-- Fix a bug in the default model schema in which the collapsible database
-  index was not marked unique.
+- [model migration] Fix a bug in the default model schema in which the
+  collapsible database index was not marked unique.
 
 - Copy trace info when retrying a job.
 
@@ -45,7 +45,7 @@ Changes
 - [breaking] Require SQLAlchemy 1.4+ and resolve deprecation warnings related to
   SQLAlchemy 2.0.
 
-- [breaking] Rename ``update_job_id`` to ``updated_job_id`` in the
+- [model migration] Rename ``update_job_id`` to ``updated_job_id`` in the
   ``JobCursor`` model.
 
 0.8.1 (2022-04-15)
@@ -59,10 +59,10 @@ Changes
 0.8.0 (2022-04-15)
 ------------------
 
-- [breaking] Add ``update_job_id`` foreign key to the ``JobCursor`` model to
+- [model migration] Add ``update_job_id`` foreign key to the ``JobCursor`` model to
   make it possible to know which job last updated the value in the cursor.
 
-- [breaking] Add ``trace`` json blob to the ``Job`` model.
+- [model migration] Add ``trace`` json blob to the ``Job`` model.
 
 - Support a ``trace`` json blob when creating new jobs. This value is available
   on the running job context and can be used when creating sub-jobs or when
@@ -107,9 +107,9 @@ Changes
 0.6.0 (2022-01-14)
 ------------------
 
-- [breaking] Add model changes to mark jobs as collapsible.
+- [model migration] Add model changes to mark jobs as collapsible.
 
-- [breaking] Add model changes to the cursor index.
+- [model migration] Add model changes to the cursor index.
 
 - Allow multiple pending jobs to be scheduled on the same cursor if either:
 
@@ -157,13 +157,14 @@ Changes
 0.5.1 (2021-01-09)
 ------------------
 
-- Drop the ``UNIQUE`` constraint on the background job ``lock_id`` column.
+- [model migration] Drop the ``UNIQUE`` constraint on the background job
+  ``lock_id`` column.
 
 0.5 (2021-01-09)
 ----------------
 
-- Add a scheduler model with support for emitting periodic jobs based on
-  RRULE syntax.
+- [model migration] Add a scheduler model with support for emitting periodic
+  jobs based on RRULE syntax.
   See https://github.com/mmerickel/psycopg2_mq/pull/11
 
 - Enable the workers to coordinate on a per-queue basis who is in control
@@ -205,8 +206,8 @@ Changes
 0.4 (2019-10-28)
 ----------------
 
-- Add a ``worker`` column to the ``Job`` model to track what worker
-  is handling a job.
+- [model migration] Add a ``worker`` column to the ``Job`` model to track what
+  worker is handling a job.
 
 - Add an optional ``name`` argument to ``MQWorker`` to name the worker -
   the value will be recorded in each job.
@@ -247,14 +248,14 @@ Changes
 0.3 (2019-10-15)
 ----------------
 
-- Add a new column ``cursor_snapshot`` to the ``Job`` model which will
-  contain the value of the cursor when the job begins.
+- [model migration] Add a new column ``cursor_snapshot`` to the ``Job`` model which
+  will contain the value of the cursor when the job begins.
 
 0.2 (2019-10-09)
 ----------------
 
-- Add cursor support for jobs. This requires a schema migration to add
-  a ``cursor_key`` column, a new ``JobCursor`` model, and some new indices.
+- [model migration] Add cursor support for jobs. This requires a schema migration to
+  add a ``cursor_key`` column, a new ``JobCursor`` model, and some new indices.
 
 0.1.6 (2019-10-07)
 ------------------
@@ -280,7 +281,7 @@ Changes
 0.1.2 (2018-09-04)
 ------------------
 
-- Rename ``Job.params`` to ``Job.args``.
+- [model migration] Rename ``Job.params`` to ``Job.args``.
 
 0.1.1 (2018-09-04)
 ------------------
