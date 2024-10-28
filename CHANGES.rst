@@ -6,6 +6,8 @@ Changes
 
 - Support SQLAlchemy 2.x.
 
+- Must mark a lost job as failed prior to being able to retry it.
+
 0.12 (2024-10-27)
 -----------------
 

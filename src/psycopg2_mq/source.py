@@ -238,8 +238,7 @@ class MQSource:
         """
         Retry a job.
 
-        This dispatches a new job, copying the metadata from a job that was
-        failed or lost.
+        This dispatches a new job, copying the metadata from a job that was finished.
 
         """
         if now is None:
@@ -249,12 +248,9 @@ class MQSource:
         if job.state not in {
             self.model.JobStates.COMPLETED,
             self.model.JobStates.FAILED,
-            self.model.JobStates.LOST,
+            self.model.JobStates.CANCELED,
         }:
             raise RuntimeError('job is not in a retryable state')
-
-        if job.state == self.model.JobStates.LOST:
-            self.fail_lost_job(job_id, now=now)
 
         kw = {}
         if self.model.JobListenerLink is not None:
@@ -265,7 +261,7 @@ class MQSource:
         trace = deepcopy(job.trace or {})
         trace['mq_source_job_id'] = job_id
 
-        new_job_id = self.call(
+        return self.call(
             job.queue,
             job.method,
             job.args,
@@ -276,7 +272,6 @@ class MQSource:
             trace=trace,
             **kw,
         )
-        return new_job_id
 
     def fail_lost_job(self, job_id, *, now=None):
         """
