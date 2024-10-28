@@ -43,6 +43,34 @@ jobs:
             - run: pip install tox
             - name: Running tox
               run: tox -e py
+    test-sqla14:
+        strategy:
+            matrix:
+                py:
+                    - "3.9"
+                    - "3.13"
+                os:
+                    - "ubuntu-22.04"
+                architecture:
+                    - x64
+                pg-version:
+                    - "12"
+                    - "16"
+        name: "Python ${{ matrix.py }}-${{ matrix.architecture }} + PG ${{ matrix.pg-version }} on ${{ matrix.os }}"
+        runs-on: ${{ matrix.os }}
+        steps:
+            - uses: actions/checkout@v4
+            - name: Setup python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: ${{ matrix.py }}
+                  architecture: ${{ matrix.architecture }}
+            - uses: ankane/setup-postgres@v1
+              with:
+                  postgres-version: ${{ matrix.pg-version }}
+            - run: pip install tox
+            - name: Running tox
+              run: tox -e py-sqla14
     coverage:
         runs-on: ubuntu-22.04
         name: Validate coverage
