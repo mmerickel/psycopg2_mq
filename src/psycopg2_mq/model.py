@@ -1,7 +1,6 @@
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as pg
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.schema import CheckConstraint, Column, ForeignKey, Index
 from sqlalchemy.types import BigInteger, Boolean, DateTime, Enum, Integer, Text
 
