@@ -1,8 +1,8 @@
 Changes
 =======
 
-unreleased
-----------
+0.12.1 (2024-10-27)
+-------------------
 
 - Support SQLAlchemy 2.x.
 

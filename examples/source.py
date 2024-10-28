@@ -16,7 +16,7 @@ def wait_for_job(source, job_id, *, max_wait=60):
         if time.time() - start > max_wait:  # pragma: nocover
             raise Exception('timeout while waiting for job to finish', job_id)
         with source.dbsession.begin():
-            job = source.find_job(job_id)
+            job = source.get_job(job_id)
             if job.state in {
                 source.model.JobStates.COMPLETED,
                 source.model.JobStates.FAILED,
