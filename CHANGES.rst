@@ -1,6 +1,15 @@
 Changes
 =======
 
+0.12.2 (2024-10-29)
+-------------------
+
+- Prevent canceling jobs in the lost state.
+
+- Allow retrying jobs in any state.
+
+- Allow setting a result on a lost job when moving it to failed.
+
 0.12.1 (2024-10-27)
 -------------------
 

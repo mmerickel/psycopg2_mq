@@ -238,20 +238,18 @@ class MQSource:
         """
         Retry a job.
 
-        This dispatches a new job, copying the metadata from a job that was finished.
+        This dispatches a new job by copying the metadata from a job that was finished.
+
+        It is possible to retry a job regardless of the current job's state.
+
+        The new job is never collapsible with other jobs. If you wish to retry it as
+        collapsible then you should invoke :meth:`.call` directly yourself.
 
         """
         if now is None:
             now = datetime.utcnow()
 
         job = self.get_job(job_id)
-        if job.state not in {
-            self.model.JobStates.COMPLETED,
-            self.model.JobStates.FAILED,
-            self.model.JobStates.CANCELED,
-        }:
-            raise RuntimeError('job is not in a retryable state')
-
         kw = {}
         if self.model.JobListenerLink is not None:
             kw['listener_ids'] = [link.listener_id for link in job.listener_links]
@@ -273,27 +271,25 @@ class MQSource:
             **kw,
         )
 
-    def fail_lost_job(self, job_id, *, now=None):
+    def fail_lost_job(self, job_id, *, result=None):
         """
         Mark a lost job as failed.
 
         """
-        if now is None:
-            now = datetime.utcnow()
-
         job = self.get_job(job_id, for_update=True)
         if job.state != self.model.JobStates.LOST:
             raise RuntimeError('job is not in a lost state')
 
         job.state = self.model.JobStates.FAILED
-        if job.end_time is None:
-            job.end_time = now
+        if result is not None:
+            job.result = result
 
-    def cancel_job(self, job_id, *, result=None, now=None):
+    def cancel_job(self, job_id, *, now=None):
         """
         Cancel a job.
 
-        It must be ``PENDING``, ``FAILED``, or ``LOST``.
+        Only pending and failed jobs can be marked as canceled. It is not possible to
+        cancel a job that is currently running.
 
         """
         if now is None:
@@ -301,15 +297,12 @@ class MQSource:
 
         job = self.get_job(job_id, for_update=True)
         if job.state not in {
-            self.model.JobStates.LOST,
             self.model.JobStates.PENDING,
             self.model.JobStates.FAILED,
         }:
             raise RuntimeError('job is not in a valid state')
 
         job.state = self.model.JobStates.CANCELED
-        if result is not None:
-            job.result = result
         if job.end_time is None:
             job.end_time = now
         log.info('marked job=%s canceled', job_id)
