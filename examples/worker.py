@@ -1,5 +1,6 @@
 import argparse
 import logging
+from pprint import pprint
 import sqlalchemy as sa
 
 from psycopg2_mq import MQWorker, make_default_model
@@ -10,12 +11,17 @@ model = make_default_model(metadata)
 
 class DummyQueue:
     def execute_job(self, job):
-        print(job.id, job.queue, job.method, job.args)
-        return {
+        result = {
+            'id': job.id,
             'queue': job.queue,
             'method': job.method,
             'args': job.args,
+            'listener_ids': job.listener_ids,
+            'schedule_ids': job.schedule_ids,
+            'trace': job.trace,
         }
+        pprint(result)
+        return result
 
 
 def main():

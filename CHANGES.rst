@@ -1,6 +1,12 @@
 Changes
 =======
 
+0.12.3 (2024-10-29)
+-------------------
+
+- Add ``job.schedule_ids`` and ``job.listener_ids`` to the job context passed to the
+  background workers.
+
 0.12.2 (2024-10-29)
 -------------------
 

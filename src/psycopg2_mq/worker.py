@@ -47,6 +47,8 @@ class JobContext:
         args,
         cursor_key=None,
         cursor=None,
+        listener_ids=None,
+        schedule_ids=None,
         trace=None,
     ):
         self.id = id
@@ -55,6 +57,8 @@ class JobContext:
         self.args = args
         self.cursor_key = cursor_key
         self.cursor = cursor
+        self.listener_ids = listener_ids
+        self.schedule_ids = schedule_ids
         self.trace = trace
 
     def extend(self, **kw):
@@ -436,13 +440,31 @@ def claim_pending_job(ctx, *, now=None, db, model):
         )
         .subquery()
     )
-    job = (
-        db.query(model.Job)
+    listener_sq = (
+        db.query(
+            model.JobListenerLink.job_id,
+            sa.func.array_agg(model.JobListenerLink.listener_id).label('listener_ids'),
+        )
+        .group_by(model.JobListenerLink.job_id)
+        .subquery()
+    )
+    schedule_sq = (
+        db.query(
+            model.JobScheduleLink.job_id,
+            sa.func.array_agg(model.JobScheduleLink.schedule_id).label('schedule_ids'),
+        )
+        .group_by(model.JobScheduleLink.job_id)
+        .subquery()
+    )
+    result = (
+        db.query(model.Job, listener_sq.c.listener_ids, schedule_sq.c.schedule_ids)
+        .with_for_update(of=model.Job, skip_locked=True)
         .outerjoin(
             running_cursor_sq,
             running_cursor_sq.c.cursor_key == model.Job.cursor_key,
         )
-        .with_for_update(of=model.Job, skip_locked=True)
+        .outerjoin(listener_sq, listener_sq.c.job_id == model.Job.id)
+        .outerjoin(schedule_sq, schedule_sq.c.job_id == model.Job.id)
         .filter(
             model.Job.state == model.JobStates.PENDING,
             model.Job.queue.in_(ctx._queues.keys()),
@@ -453,48 +475,53 @@ def claim_pending_job(ctx, *, now=None, db, model):
             model.Job.scheduled_time.asc(),
             model.Job.created_time.asc(),
         )
-        .first()
+        .limit(1)
+        .one_or_none()
     )
+    if result is None:
+        return None
 
-    if job is not None:
-        cursor = None
-        if job.cursor_key is not None:
-            cursor = (
-                db.query(model.JobCursor)
-                .filter(model.JobCursor.key == job.cursor_key)
-                .first()
-            )
-            if cursor is not None:
-                cursor = cursor.properties
-            else:
-                cursor = {}
-
-            # since we commit before returning the context, it's safe to
-            # not make a deep copy here because we know the job won't run
-            # and mutate the content until after the snapshot is committed
-            job.cursor_snapshot = cursor
-
-        job.lock_id = ctx._lock_id
-        job.state = model.JobStates.RUNNING
-        job.start_time = now
-        job.worker = ctx._name
-
-        log.info(
-            'beginning job=%s queue=%s method=%s %.3fs after scheduled start',
-            job.id,
-            job.queue,
-            job.method,
-            (job.start_time - job.scheduled_time).total_seconds(),
+    job = result.Job
+    cursor = None
+    if job.cursor_key is not None:
+        cursor = (
+            db.query(model.JobCursor)
+            .filter(model.JobCursor.key == job.cursor_key)
+            .first()
         )
-        return JobContext(
-            id=job.id,
-            queue=job.queue,
-            method=job.method,
-            args=job.args,
-            cursor_key=job.cursor_key,
-            cursor=cursor,
-            trace=job.trace,
-        )
+        if cursor is not None:
+            cursor = cursor.properties
+        else:
+            cursor = {}
+
+        # since we commit before returning the context, it's safe to
+        # not make a deep copy here because we know the job won't run
+        # and mutate the content until after the snapshot is committed
+        job.cursor_snapshot = cursor
+
+    job.lock_id = ctx._lock_id
+    job.state = model.JobStates.RUNNING
+    job.start_time = now
+    job.worker = ctx._name
+
+    log.info(
+        'beginning job=%s queue=%s method=%s %.3fs after scheduled start',
+        job.id,
+        job.queue,
+        job.method,
+        (job.start_time - job.scheduled_time).total_seconds(),
+    )
+    return JobContext(
+        id=job.id,
+        queue=job.queue,
+        method=job.method,
+        args=job.args,
+        cursor_key=job.cursor_key,
+        cursor=cursor,
+        listener_ids=result.listener_ids,
+        schedule_ids=result.schedule_ids,
+        trace=job.trace,
+    )
 
 
 def execute_job(queue, job):
