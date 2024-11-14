@@ -119,11 +119,13 @@ matching this event will be used to create a new job in the system.
 
 To register a listener, look at the ``MQSource.add_listener(event, queue, method, args, ...)`` API.
 
-There is a default event emitted every time a job is completed. It has the format::
+There is a default event emitted every time a job moved to a finished state. It has the format::
 
-  mq_job_complete.<queue>.<method>
+  mq.job_finished.<queue>.<method>.<state>
 
-You are free to emit your own events as well if you need different dimensions!
+For example, ``mq.job_finished.completed.dummy.echo.completed``.
+
+You are free to emit your own custom events as well if you need different dimensions!
 
 When ``collapse_on_cursor`` is ``False`` then the listener receives an ``event`` arg containing the ``name``, ``listener_id``, and ``data`` keys.
 

@@ -559,12 +559,24 @@ def finish_job(ctx, job_id, success, result, cursor, *, db, model):
     job.lock_id = None
     log.info('finished processing job=%s, state="%s"', job_id, job.state)
 
+    mq_source = ctx._mq_source_factory(dbsession=db, model=model)
     if success:
-        mq_source = ctx._mq_source_factory(dbsession=db, model=model)
         mq_source.emit_event(
-            f'mq_job_complete.{job.queue}.{job.method}',
+            f'mq.job_finished.{job.queue}.{job.method}.completed',
             {
                 'job_id': job_id,
+                'start_time': job.start_time.isoformat(),
+                'end_time': job.end_time.isoformat(),
+                'result': result,
+            },
+        )
+    else:
+        mq_source.emit_event(
+            f'mq.job_finished.{job.queue}.{job.method}.failed',
+            {
+                'job_id': job_id,
+                'start_time': job.start_time.isoformat(),
+                'end_time': job.end_time.isoformat(),
                 'result': result,
             },
         )
@@ -614,12 +626,23 @@ def mark_lost_jobs(ctx, *, db, model):
         .order_by(model.Job.start_time.asc())
     )
     lost_job_ids = set()
+    mq_source = ctx._mq_source_factory(dbsession=db, model=model)
     for job in job_q:
         job.state = model.JobStates.LOST
         job.lock_id = None
         job.end_time = ctx._now()
         log.error('marking job=%s as lost', job.id)
         lost_job_ids.add(job.id)
+
+        mq_source.emit_event(
+            f'mq.job_finished.{job.queue}.{job.method}.lost',
+            {
+                'job_id': job.id,
+                'start_time': job.start_time.isoformat(),
+                'end_time': job.end_time.isoformat(),
+            },
+        )
+
 
     job_q = db.query(model.Job).filter(
         model.Job.state == model.JobStates.LOST,
