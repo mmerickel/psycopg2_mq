@@ -40,7 +40,10 @@ def test_listener_integration(model, dbsession, worker_proxy):
     source = MQSource(dbsession=dbsession, model=model)
     with dbsession.begin():
         listener = source.add_listener(
-            'mq.job_finished.completed.dummy.echo', 'listener', 'listener_echo', {'a': 1}
+            'mq.job_finished.completed.dummy.echo',
+            'listener',
+            'listener_echo',
+            {'a': 1},
         )
         listener_id = listener.id
 

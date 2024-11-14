@@ -649,7 +649,6 @@ def mark_lost_jobs(ctx, *, db, model):
             },
         )
 
-
     job_q = db.query(model.Job).filter(
         model.Job.state == model.JobStates.LOST,
         model.Job.cursor_key.isnot(None),
