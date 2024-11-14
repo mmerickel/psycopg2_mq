@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.12.4 (2024-11-13)
+-------------------
+
+- Emit an event any time a job hits a terminal state. The format has changed from
+  ``mq_job_complete.<queue>.<method>`` to ``mq.job_finished.<queue>.<method>.<state>``.
+  This includes ``completed``, ``failed``, and ``lost``.
+
 0.12.3 (2024-10-29)
 -------------------
 
