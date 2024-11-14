@@ -40,7 +40,7 @@ def test_listener_integration(model, dbsession, worker_proxy):
     source = MQSource(dbsession=dbsession, model=model)
     with dbsession.begin():
         listener = source.add_listener(
-            'mq.job_finished.dummy.echo.completed', 'listener', 'listener_echo', {'a': 1}
+            'mq.job_finished.completed.dummy.echo', 'listener', 'listener_echo', {'a': 1}
         )
         listener_id = listener.id
 
@@ -57,10 +57,12 @@ def test_listener_integration(model, dbsession, worker_proxy):
         assert job.end_time is not None
 
         expected_event = {
-            'name': 'mq.job_finished.dummy.echo.completed',
+            'name': 'mq.job_finished.completed.dummy.echo',
             'listener_id': listener_id,
             'data': {
-                'job_id': job.id,
+                'id': job.id,
+                'queue': job.queue,
+                'method': job.method,
                 'start_time': job.start_time.isoformat(),
                 'end_time': job.end_time.isoformat(),
                 'result': job.result,

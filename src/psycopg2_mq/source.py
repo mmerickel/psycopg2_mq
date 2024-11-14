@@ -284,6 +284,18 @@ class MQSource:
         if result is not None:
             job.result = result
 
+        self.emit_event(
+            f'mq.job_finished.failed.{job.queue}.{job.method}',
+            {
+                'id': job_id,
+                'queue': job.queue,
+                'method': job.method,
+                'start_time': job.start_time.isoformat(),
+                'end_time': job.end_time.isoformat(),
+                'result': result,
+            },
+        )
+
     def cancel_job(self, job_id, *, now=None):
         """
         Cancel a job.

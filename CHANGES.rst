@@ -1,6 +1,15 @@
 Changes
 =======
 
+0.12.5 (2024-11-14)
+-------------------
+
+- Change the format to put the state in the middle of the emitted event.
+
+- Emit an event when moving from lost to failed via ``MQSource.fail_lost_job``.
+
+- Add the ``queue`` and ``method`` to the event args on ``mq.job_finished`` events
+
 0.12.4 (2024-11-13)
 -------------------
 

@@ -562,9 +562,11 @@ def finish_job(ctx, job_id, success, result, cursor, *, db, model):
     mq_source = ctx._mq_source_factory(dbsession=db, model=model)
     if success:
         mq_source.emit_event(
-            f'mq.job_finished.{job.queue}.{job.method}.completed',
+            f'mq.job_finished.completed.{job.queue}.{job.method}',
             {
-                'job_id': job_id,
+                'id': job_id,
+                'queue': job.queue,
+                'method': job.method,
                 'start_time': job.start_time.isoformat(),
                 'end_time': job.end_time.isoformat(),
                 'result': result,
@@ -572,9 +574,11 @@ def finish_job(ctx, job_id, success, result, cursor, *, db, model):
         )
     else:
         mq_source.emit_event(
-            f'mq.job_finished.{job.queue}.{job.method}.failed',
+            f'mq.job_finished.failed.{job.queue}.{job.method}',
             {
-                'job_id': job_id,
+                'id': job_id,
+                'queue': job.queue,
+                'method': job.method,
                 'start_time': job.start_time.isoformat(),
                 'end_time': job.end_time.isoformat(),
                 'result': result,
@@ -635,9 +639,11 @@ def mark_lost_jobs(ctx, *, db, model):
         lost_job_ids.add(job.id)
 
         mq_source.emit_event(
-            f'mq.job_finished.{job.queue}.{job.method}.lost',
+            f'mq.job_finished.lost.{job.queue}.{job.method}',
             {
-                'job_id': job.id,
+                'job': job.id,
+                'queue': job.queue,
+                'method': job.method,
                 'start_time': job.start_time.isoformat(),
                 'end_time': job.end_time.isoformat(),
             },

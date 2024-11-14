@@ -121,9 +121,9 @@ To register a listener, look at the ``MQSource.add_listener(event, queue, method
 
 There is a default event emitted every time a job moved to a finished state. It has the format::
 
-  mq.job_finished.<queue>.<method>.<state>
+  mq.job_finished.<state><queue>.<method>
 
-For example, ``mq.job_finished.completed.dummy.echo.completed``.
+For example, ``mq.job_finished.completed.dummy.echo``.
 
 You are free to emit your own custom events as well if you need different dimensions!
 
