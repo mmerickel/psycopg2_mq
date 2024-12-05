@@ -481,7 +481,9 @@ def claim_pending_job(ctx, *, now=None, db, model):
     if result is None:
         return None
 
-    job = result.Job
+    # we'd like to use result.Job here but if a user renamed the job model in their
+    # own copy of MQModel then it won't match up
+    job = result[0]
     cursor = None
     if job.cursor_key is not None:
         cursor = (

@@ -1,6 +1,12 @@
 Changes
 =======
 
+0.12.7 (2024-12-05)
+-------------------
+
+- Fixed an issue when claiming jobs if the SQLAlchemy Job model passed in to MQModel is
+  not named ``Job`` in the SQLAlchemy metadata.
+
 0.12.6 (2024-11-14)
 -------------------
 
