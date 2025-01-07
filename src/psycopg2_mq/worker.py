@@ -635,7 +635,13 @@ def mark_lost_jobs(ctx, *, db, model):
         job.state = model.JobStates.LOST
         job.lock_id = None
         job.end_time = ctx._now()
-        log.error('marking job=%s as lost', job.id)
+        log.error(
+            'marking job as lost id=%s queue=%s method=%s worker=%s',
+            job.id,
+            job.queue,
+            job.method,
+            job.worker,
+        )
         lost_job_ids.add(job.id)
 
         mq_source.emit_event(
