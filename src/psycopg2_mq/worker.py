@@ -281,17 +281,17 @@ def rotate_dbconn(ctx):
     conn.detach()
     conn = ctx._dbconn = conn.connection.dbapi_connection
     conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-    curs = conn.cursor()
-    for queue in ctx._queues.keys():
-        curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
+    with conn.cursor() as curs:
+        for queue in ctx._queues.keys():
+            curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
     ctx._connect_time = ctx._now()
     log.info('connected')
 
+    # grab an advisory lock which can track our later activity
+    acquire_worker_lock(ctx)
+
     # clean up any locks acquired with the previous connection object
     release_stale_locks(ctx, retry=False)
-
-    # grab an advisory lock which can track our later activity
-    acquire_worker_lock(ctx, retry=False)
 
     # if we are executing some jobs then re-lock them so they aren't lost
     recover_active_jobs(ctx, retry=False)
@@ -361,8 +361,8 @@ def run_maintenance(ctx, *, db, model):
 @dbsession
 def release_stale_locks(ctx, *, db, model):
     Lock = model.Lock
-    lock_sq = (
-        db.query(Lock.queue, Lock.key)
+    stale_q = (
+        db.query(Lock)
         # do not block rows that are being cleaned by another transaction
         .with_for_update(of=Lock, skip_locked=True)
         .outerjoin(
@@ -375,21 +375,18 @@ def release_stale_locks(ctx, *, db, model):
         )
         .filter(
             Lock.queue.in_(ctx._queues.keys()),
-            Lock.lock_id != sa.null(),
             pg_locks.c.objid == sa.null(),
         )
-        .subquery()
     )
-    count = (
-        db.query(Lock)
-        .filter(
-            Lock.queue == lock_sq.c.queue,
-            Lock.key == lock_sq.c.key,
+    for lock in stale_q:
+        log.warning(
+            'released stale lock on worker=%s lock_id=%s queue=%s key=%s',
+            lock.worker,
+            lock.lock_id,
+            lock.queue,
+            lock.key,
         )
-        .delete(synchronize_session=False)
-    )
-    if count > 0:
-        log.warning('released %d stale locks', count)
+        db.delete(lock)
 
 
 @dbsession
@@ -410,20 +407,21 @@ def release_worker_locks(ctx, *, db, model):
         log.debug('released %d locks', count)
 
 
-@dbsession
-def acquire_worker_lock(ctx, *, db, model, attempts=3):
-    while attempts > 0:
-        lock_id = random.randint(1, 2**31 - 1)
-        is_locked = db.execute(
-            sa.text('select pg_try_advisory_lock(:key, :id)'),
-            {'key': ctx._lock_key, 'id': lock_id},
-        ).scalar()
-        if is_locked:
-            ctx._lock_id = lock_id
-            log.debug('acquired worker lock=%s', ctx._lock_id)
-            return
+def acquire_worker_lock(ctx, attempts=3):
+    with ctx._dbconn.cursor() as curs:
+        while attempts > 0:
+            lock_id = random.randint(1, 2**31 - 1)
+            curs.execute(
+                'select pg_try_advisory_lock(%(key)s, %(id)s)',
+                {'key': ctx._lock_key, 'id': lock_id},
+            )
+            result = curs.fetchone()
+            if result[0]:
+                ctx._lock_id = lock_id
+                log.debug('acquired worker lock=%s', ctx._lock_id)
+                return
 
-        attempts -= 1
+            attempts -= 1
     raise RuntimeError('failed to acquire unique worker advisory lock')
 
 
@@ -682,6 +680,7 @@ def recover_active_jobs(ctx, *, db, model):
         # since the old connection is dead - the old lock is also gone,
         # we'll re-acquire a new one
         job.lock_id = ctx._lock_id
+        job.worker = ctx._name
         job.state = model.JobStates.RUNNING
         log.info('recovering active job=%s', job.id)
 
