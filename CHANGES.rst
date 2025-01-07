@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.12.8 (2025-01-06)
+-------------------
+
+- Fix a critical bug causing the advisory lock to be acquired on the wrong database
+  connection. If there was an issue with the database connections it could result in
+  weird behavior where jobs were marked lost when they weren't, etc.
+
 0.12.7 (2024-12-05)
 -------------------
 
