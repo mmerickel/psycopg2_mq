@@ -319,7 +319,6 @@ def retry_dbconn(fn):
                     'connection closed unexpectedly, error="%s"',
                     str(ex).strip(),
                 )
-                rotate_dbconn(ctx)
                 return fn(ctx, *args, **kwargs)
             raise
 
