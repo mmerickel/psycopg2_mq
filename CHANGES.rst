@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.12.10 (2024-01-07)
+--------------------
+
+- Improve log output if a job is blocking a cursor.
+
+- Simplify the connection rotation logic and stale lock logic to avoid race conditions.
+
 0.12.9 (2024-01-06)
 -------------------
 
