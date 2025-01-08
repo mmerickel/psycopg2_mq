@@ -360,10 +360,11 @@ def run_maintenance(ctx, *, db, model):
 @dbsession
 def release_stale_locks(ctx, *, db, model):
     Lock = model.Lock
+    # find any lock record that doesn't have a corresponding entry in pg_locks because
+    # the worker lock has been released
     stale_q = (
         db.query(Lock)
-        # do not block rows that are being cleaned by another transaction
-        .with_for_update(of=Lock, skip_locked=True)
+        .with_for_update(of=Lock)
         .outerjoin(
             pg_locks,
             sa.and_(
@@ -396,10 +397,7 @@ def release_worker_locks(ctx, *, db, model):
     Lock = model.Lock
     count = (
         db.query(Lock)
-        .filter(
-            Lock.lock_id == ctx._lock_id,
-            Lock.worker == ctx._name,
-        )
+        .filter(Lock.lock_id == ctx._lock_id)
         .delete(synchronize_session=False)
     )
     if count > 0:
@@ -407,8 +405,8 @@ def release_worker_locks(ctx, *, db, model):
 
 
 def acquire_worker_lock(ctx, attempts=3):
-    with ctx._dbconn.cursor() as curs:
-        while attempts > 0:
+    while attempts > 0:
+        with ctx._dbconn.cursor() as curs:
             lock_id = random.randint(1, 2**31 - 1)
             curs.execute(
                 'select pg_try_advisory_lock(%(key)s, %(id)s)',
@@ -623,7 +621,6 @@ def mark_lost_jobs(ctx, *, db, model):
         .filter(
             model.Job.state == model.JobStates.RUNNING,
             model.Job.queue.in_(ctx._queues.keys()),
-            model.Job.lock_id != sa.null(),
             pg_locks.c.objid == sa.null(),
         )
         .order_by(model.Job.start_time.asc())
@@ -663,7 +660,8 @@ def mark_lost_jobs(ctx, *, db, model):
         if job.id in lost_job_ids:
             continue
         log.warning(
-            'job=%s is lost and blocking execution of cursor=%s for %d seconds',
+            'job=%s queue=%s method=%s is lost and blocking execution of cursor=%s'
+            ' for %d seconds',
             job.id,
             job.cursor_key,
             (ctx._now() - job.end_time).total_seconds(),
