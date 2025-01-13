@@ -1,6 +1,12 @@
 Changes
 =======
 
+0.12.11 (2024-01-13)
+--------------------
+
+- Improve recovery when database connections are lost by trying to reconnect multiple
+  times and only logging warn/error level messages once retries completely fail.
+
 0.12.10 (2024-01-07)
 --------------------
 
