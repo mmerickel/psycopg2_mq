@@ -15,13 +15,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import column, table
 import sys
 import threading
+import time
 import traceback
 
 from .source import MQSource
 from .trigger import Trigger
 from .util import class_name, get_next_rrule_time, int_to_datetime, safe_object
 
-DEFAULT_TIMEOUT = 60
+DEFAULT_MAINTENANCE_TIMEOUT = 60
+DEFAULT_RETRY_DELAY = 5
+DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_JITTER = 1
 DEFAULT_LOCK_KEY = 1250360252  # selected via random.randint(0, 2**31-1)
 
@@ -84,7 +87,9 @@ class MQWorker:
         engine,
         queues,
         model,
-        timeout=DEFAULT_TIMEOUT,
+        retry_attempts=DEFAULT_RETRY_ATTEMPTS,
+        retry_delay=DEFAULT_RETRY_DELAY,
+        timeout=DEFAULT_MAINTENANCE_TIMEOUT,
         jitter=DEFAULT_JITTER,
         lock_key=DEFAULT_LOCK_KEY,
         threads=None,
@@ -96,9 +101,13 @@ class MQWorker:
         self._queues = queues
         self._model = model
 
+        self._retry_attempts = retry_attempts
+        if isinstance(retry_delay, timedelta):
+            retry_delay = retry_delay.total_seconds()
+        self._retry_delay_secs = retry_delay
         if not isinstance(timeout, timedelta):
             timeout = timedelta(seconds=timeout)
-        self._timeout = timeout
+        self._maintenance_timeout = timeout
         self._jitter = jitter
         self._lock_key = lock_key
 
@@ -114,7 +123,7 @@ class MQWorker:
         self._running = False
 
         self._connect_time = None
-        self._dbconn = None
+        self._listener_dbconn = None
         self._lock_id = None
         self._shutdown_trigger = None
         self._job_trigger = None
@@ -140,7 +149,7 @@ class MQWorker:
                 with connect_job_trigger(self):
                     with connect_shutdown_trigger(self):
                         with connect_pool(self):
-                            with connect_db(self):
+                            with connect_listener_dbconn(self):
                                 eventloop(self)
 
         finally:
@@ -153,6 +162,11 @@ class MQWorker:
             'args': safe_object(ex.args),
             'tb': traceback.format_tb(ex.__traceback__),
         }
+
+    def is_retryable_error(self, ex):
+        if isinstance(sa.exc.DBAPIError) and ex.connection_invalidated:
+            return True
+        return False
 
     def get_status(self):
         # shallow copy to avoid iterating a shared reference
@@ -221,22 +235,14 @@ def maybe_capture_signals(ctx):
 
 
 @contextmanager
-def connect_db(ctx):
-    rotate_dbconn(ctx)
+def connect_job_trigger(ctx):
+    ctx._job_trigger = Trigger()
     try:
         yield
 
     finally:
-        if ctx._dbconn is not None:
-            try:
-                release_worker_locks(ctx, retry=False)
-            except Exception:
-                log.warning(
-                    'failed to release locks, they will be cleaned up by '
-                    'another worker'
-                )
-            ctx._dbconn.close()
-            ctx._dbconn = None
+        ctx._job_trigger.close()
+        ctx._job_trigger = None
 
 
 @contextmanager
@@ -251,17 +257,6 @@ def connect_shutdown_trigger(ctx):
 
 
 @contextmanager
-def connect_job_trigger(ctx):
-    ctx._job_trigger = Trigger()
-    try:
-        yield
-
-    finally:
-        ctx._job_trigger.close()
-        ctx._job_trigger = None
-
-
-@contextmanager
 def connect_pool(ctx):
     pool = futures.ThreadPoolExecutor(ctx._threads)
     ctx._pool = pool
@@ -272,35 +267,78 @@ def connect_pool(ctx):
         ctx._pool = None
 
 
-def rotate_dbconn(ctx):
-    if ctx._dbconn is not None:
-        ctx._dbconn.close()
+@contextmanager
+def connect_listener_dbconn(ctx):
+    rotate_listener_dbconn(ctx)
+    try:
+        yield
 
-    conn = ctx._engine.connect()
-    assert conn.dialect.driver == 'psycopg2'
-    conn.detach()
-    conn = ctx._dbconn = conn.connection.dbapi_connection
-    conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
-    with conn.cursor() as curs:
-        for queue in ctx._queues.keys():
-            curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
+    finally:
+        if ctx._listener_dbconn is not None:
+            try:
+                release_worker_locks(ctx, retry=False)
+            except Exception:
+                log.warning(
+                    'failed to release locks, they will be cleaned up by '
+                    'another worker'
+                )
+            ctx._listener_dbconn.close()
+            ctx._listener_dbconn = None
+
+
+def rotate_listener_dbconn(ctx):
+    if ctx._listener_dbconn is not None:
+        ctx._listener_dbconn.close()
+        ctx._listener_dbconn = None
+
+    attempt = 0
+    attempts = ctx._retry_attempts + 1
+    while attempt < attempts:
+        attempt += 1
+
+        if attempt > 1:
+            delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
+            log.info('retrying listener connection after %.3f seconds', delay)
+            time.sleep(delay)
+
+        try:
+            conn = ctx._engine.connect()
+            assert conn.dialect.driver == 'psycopg2'
+            conn.detach()
+            conn = ctx._listener_dbconn = conn.connection.dbapi_connection
+            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+            with conn.cursor() as curs:
+                for queue in ctx._queues.keys():
+                    curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
+            break
+        except Exception:
+            if attempt == attempts:
+                log.exception(
+                    'failed to reconnect listener after %s attempts, aborting', attempts
+                )
+                raise
+            else:
+                # log the failure and try again
+                log.info('failed to reconnect listener', exc_info=1)
+
     ctx._connect_time = ctx._now()
-    log.info('connected')
+    log.info('listener connected')
 
     # grab an advisory lock which can track our later activity
+    old_lock_id = ctx._lock_id
     acquire_worker_lock(ctx)
 
-    # clean up any locks acquired with the previous connection object
-    release_stale_locks(ctx, retry=False)
-
     # if we are executing some jobs then re-lock them so they aren't lost
-    recover_active_jobs(ctx, retry=False)
+    recover_active_jobs(ctx)
 
     # we lost our locks on the scheduling queues so reinitilize
-    recover_scheduler_queues(ctx, retry=False)
+    recover_scheduler_queues(ctx, old_lock_id=old_lock_id)
+
+    # clean up any locks acquired with the previous connection object
+    release_stale_locks(ctx)
 
     # it's possible we missed some jobs while reconnecting so reinitialize
-    set_next_job_time(ctx, retry=False)
+    set_next_job_time(ctx)
 
 
 def retry_dbconn(fn):
@@ -311,16 +349,39 @@ def retry_dbconn(fn):
         # protect against misuse where db and retry=True are both supplied
         if 'db' in kwargs and retry:
             raise ValueError('cannot set retry when active db is manually supplied')
-        try:
-            return fn(ctx, *args, **kwargs)
-        except sa.exc.DBAPIError as ex:
-            if ex.connection_invalidated and retry:
-                log.warning(
-                    'connection closed unexpectedly, error="%s"',
-                    str(ex).strip(),
+
+        attempt = 0
+        attempts = (ctx._retry_attempts if retry else 0) + 1
+        while attempt < attempts:
+            attempt += 1
+
+            if attempt > 1:
+                delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
+                log.info(
+                    'retrying fn=%s after %.3f seconds',
+                    fn.__qualname__,
+                    delay,
                 )
+                time.sleep(delay)
+
+            try:
                 return fn(ctx, *args, **kwargs)
-            raise
+            except sa.exc.DBAPIError as ex:
+                if not ctx.is_retryable_error(ex):
+                    raise
+
+                if attempt == attempts:
+                    log.exception(
+                        'retryable error occurred while executing fn=%s and'
+                        ' could not recover after %s attempts, error="%s"',
+                        fn.__qualname__,
+                        attempts,
+                        str(ex).strip(),
+                    )
+                    raise
+                else:
+                    # log the failure and try again
+                    log.info('failed to retry fn=%s', fn.__qualname__, exc_info=1)
 
     return wrapper
 
@@ -354,7 +415,7 @@ def run_maintenance(ctx, *, db, model):
     lock_scheduler_queues(ctx, db=db, model=model)
     set_next_job_time(ctx, db=db, model=model)
 
-    ctx._next_maintenance_time = ctx._now() + ctx._timeout
+    ctx._next_maintenance_time = ctx._now() + ctx._maintenance_timeout
 
 
 @dbsession
@@ -406,7 +467,7 @@ def release_worker_locks(ctx, *, db, model):
 
 def acquire_worker_lock(ctx, attempts=3):
     while attempts > 0:
-        with ctx._dbconn.cursor() as curs:
+        with ctx._listener_dbconn.cursor() as curs:
             lock_id = random.randint(1, 2**31 - 1)
             curs.execute(
                 'select pg_try_advisory_lock(%(key)s, %(id)s)',
@@ -419,7 +480,9 @@ def acquire_worker_lock(ctx, attempts=3):
                 return
 
             attempts -= 1
-    raise RuntimeError('failed to acquire unique worker advisory lock')
+    raise RuntimeError(
+        f'failed to acquire unique worker advisory lock after {attempts} attempts'
+    )
 
 
 @dbsession
@@ -502,7 +565,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
     job.worker = ctx._name
 
     log.info(
-        'beginning job=%s queue=%s method=%s %.3fs after scheduled start',
+        'beginning job=%s queue=%s method=%s %.3f seconds after scheduled start',
         job.id,
         job.queue,
         job.method,
@@ -760,8 +823,27 @@ def finish_jobs(ctx):
 
 
 @dbsession
-def recover_scheduler_queues(ctx, *, db, model):
-    ctx._scheduler_queues = set()
+def recover_scheduler_queues(ctx, *, old_lock_id, db, model):
+    if old_lock_id is not None:
+        old_queues = set(ctx._scheduler_queues)
+        ctx._scheduler_queues = set()
+        lock_q = (
+            db.query(model.Lock)
+            .with_for_update(of=model.Lock)
+            .filter(
+                model.Lock.queue.in_(old_queues),
+                model.Lock.key == 'scheduler',
+                model.Lock.lock_id == old_lock_id,
+            )
+        )
+        for lock in lock_q:
+            # since the old connection is dead - the old lock is also gone,
+            # we'll re-acquire a new one
+            lock.lock_id = ctx._lock_id
+            lock.worker = ctx._name
+            log.info('recovering scheduler lock on queue=%s', lock.queue)
+            ctx._scheduler_queues.add(lock.queue)
+
     lock_scheduler_queues(ctx, db=db, model=model)
 
 
@@ -793,7 +875,7 @@ def lock_scheduler_queues(ctx, *, db, model, now=None):
         log.info('scheduler started for queues=%s', ','.join(sorted(new_queues)))
     ctx._scheduler_queues.update(new_queues)
 
-    stale_cutoff_time = now - ctx._timeout
+    stale_cutoff_time = now - ctx._maintenance_timeout
     stale_schedules = (
         db.query(model.JobSchedule)
         .with_for_update()
@@ -917,15 +999,13 @@ def handle_notifies(ctx, conn):
         # this is a little hairy but since we are using the raw psycopg2
         # connection we cannot rely on sqlalchemy's nice error handling so
         # we test the connection directly to see if it's closed and if it is
-        # we reconnect - we set the previous connection to None so that
-        # rotate_dbconn doesn't invoke connection.close() on it
-        if conn.closed:
-            log.warning(
-                'connection closed unexpectedly, error="%s"',
+        # we reconnect
+        if conn.closed and conn is ctx._listener_dbconn:
+            log.info(
+                'listener connection closed unexpectedly will try to reconnect, error="%s"',
                 str(ex).strip(),
             )
-            ctx._dbconn = None
-            rotate_dbconn(ctx)
+            rotate_listener_dbconn(ctx)
             return CONTINUE_EVENT
         raise
 
@@ -968,7 +1048,7 @@ def handle_notifies(ctx, conn):
 
 
 def get_next_event(ctx):
-    conn = ctx._dbconn
+    conn = ctx._listener_dbconn
 
     rlist = [ctx._job_trigger]
     if ctx._running:
@@ -977,7 +1057,7 @@ def get_next_event(ctx):
             rlist.append(ctx._shutdown_trigger)
 
     now = ctx._now()
-    timeouts = [ctx._timeout]
+    timeouts = [ctx._maintenance_timeout]
     if ctx._running:
         timeouts.append(ctx._next_maintenance_time - now)
         timeouts.append(ctx._next_schedule_time - now)
