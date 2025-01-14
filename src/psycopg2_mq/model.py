@@ -303,14 +303,20 @@ def make_default_model(metadata, JobStates=JobStates):
     class Lock(Base):
         __tablename__ = 'mq_lock'
 
-        queue = Column(Text, primary_key=True)
+        ns = Column(Text, primary_key=True)
         key = Column(Text, primary_key=True)
-
         lock_id = Column(Integer, nullable=False)
         worker = Column(Text, nullable=False)
 
         def __repr__(self):
-            return '<Lock(queue="{0.queue}", key="{0.key}">'.format(self)
+            return (
+                '<Lock('
+                'ns="{0.ns}"'
+                ', key="{0.key}"'
+                ', lock_id={0.lock_id}'
+                ', worker="{0.worker}"'
+                '>'.format(self)
+            )
 
     return Model(
         Job=Job,

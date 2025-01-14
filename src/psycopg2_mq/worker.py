@@ -29,6 +29,8 @@ DEFAULT_LOCK_KEY = 1250360252  # selected via random.randint(0, 2**31-1)
 # lazy backoff algorithm for up to 60 seconds
 DEFAULT_RETRY_INTERVALS = (1, 3, 5, 10, 15, 30)
 
+LOCK_NS_QUEUE_SCHEDULES = 'queue-schedules'
+
 
 log = __import__('logging').getLogger(__name__)
 
@@ -447,18 +449,15 @@ def release_stale_locks(ctx, *, db, model):
                 pg_locks.c.objid == Lock.lock_id,
             ),
         )
-        .filter(
-            Lock.queue.in_(ctx._queues.keys()),
-            pg_locks.c.objid == sa.null(),
-        )
+        .filter(pg_locks.c.objid == sa.null())
     )
     for lock in stale_q:
         log.warning(
-            'released stale lock on worker=%s lock_id=%s queue=%s key=%s',
+            'released stale lock ns=%s key=%s on worker=%s lock_id=%s',
+            lock.ns,
+            lock.key,
             lock.worker,
             lock.lock_id,
-            lock.queue,
-            lock.key,
         )
         db.delete(lock)
 
@@ -837,16 +836,18 @@ def finish_jobs(ctx):
 
 @dbsession
 def recover_scheduler_queues(ctx, *, old_lock_id, db, model):
+    old_queues = set(ctx._scheduler_queues)
+    ctx._scheduler_queues = set()
+
     if old_lock_id is not None:
-        old_queues = set(ctx._scheduler_queues)
-        ctx._scheduler_queues = set()
+        Lock = model.Lock
         lock_q = (
-            db.query(model.Lock)
-            .with_for_update(of=model.Lock)
+            db.query(Lock)
+            .with_for_update(of=Lock)
             .filter(
-                model.Lock.queue.in_(old_queues),
-                model.Lock.key == 'scheduler',
-                model.Lock.lock_id == old_lock_id,
+                Lock.ns == LOCK_NS_QUEUE_SCHEDULES,
+                Lock.key.in_(old_queues),
+                Lock.lock_id == old_lock_id,
             )
         )
         for lock in lock_q:
@@ -854,8 +855,10 @@ def recover_scheduler_queues(ctx, *, old_lock_id, db, model):
             # we'll re-acquire a new one
             lock.lock_id = ctx._lock_id
             lock.worker = ctx._name
-            log.info('recovering scheduler lock on queue=%s', lock.queue)
-            ctx._scheduler_queues.add(lock.queue)
+
+            queue = lock.key
+            log.info('recovering scheduler lock on queue=%s', queue)
+            ctx._scheduler_queues.add(queue)
 
     lock_scheduler_queues(ctx, db=db, model=model)
 
@@ -872,14 +875,14 @@ def lock_scheduler_queues(ctx, *, db, model, now=None):
             insert(Lock.__table__)
             .values(
                 {
-                    Lock.queue: queue,
-                    Lock.key: 'scheduler',
+                    Lock.ns: LOCK_NS_QUEUE_SCHEDULES,
+                    Lock.key: queue,
                     Lock.lock_id: ctx._lock_id,
                     Lock.worker: ctx._name,
                 }
             )
             .on_conflict_do_nothing()
-            .returning(Lock.queue)
+            .returning(Lock.key)
         ).scalar()
         if result is not None:
             new_queues.add(queue)
