@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.12.12 (2024-01-13)
+--------------------
+
+- Improve the retry logic to use an exponential backoff.
+
+- Fix a crash introduced in 0.12.11 when connections failed.
+
 0.12.11 (2024-01-13)
 --------------------
 
