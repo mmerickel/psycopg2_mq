@@ -380,7 +380,7 @@ def retry_dbconn(fn):
                 if attempt.is_last_attempt:
                     log.exception(
                         'retryable error occurred while executing fn=%s and'
-                        ' could not recover after %s attempts, error="%s"',
+                        ' could not recover after %s attempts, error=%s',
                         fn.__qualname__,
                         attempt.index + 1,
                         str(ex).strip(),
@@ -1015,7 +1015,7 @@ def handle_notifies(ctx, conn):
         # we reconnect
         if conn.closed and conn is ctx._listener_dbconn:
             log.info(
-                'listener connection closed unexpectedly will try to reconnect, error="%s"',
+                'listener connection closed unexpectedly, error=%s',
                 str(ex).strip(),
             )
             rotate_listener_dbconn(ctx)
