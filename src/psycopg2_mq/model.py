@@ -115,9 +115,12 @@ def make_default_model(metadata, JobStates=JobStates):
                 unique=True,
             ),
             Index(
-                'uq_mq_job_running_cursor_key',
+                'uq_mq_job_active_cursor_key',
                 cursor_key,
-                postgresql_where=state == JobStates.RUNNING,
+                postgresql_where=sa.and_(
+                    cursor_key.isnot(None),
+                    state.in_([JobStates.RUNNING, JobStates.LOST])
+                ),
                 unique=True,
             ),
         )
