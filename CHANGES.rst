@@ -1,27 +1,27 @@
 Changes
 =======
 
-0.12.12 (2024-01-13)
+0.12.12 (2025-01-13)
 --------------------
 
 - Improve the retry logic to use an exponential backoff.
 
 - Fix a crash introduced in 0.12.11 when connections failed.
 
-0.12.11 (2024-01-13)
+0.12.11 (2025-01-13)
 --------------------
 
 - Improve recovery when database connections are lost by trying to reconnect multiple
   times and only logging warn/error level messages once retries completely fail.
 
-0.12.10 (2024-01-07)
+0.12.10 (2025-01-07)
 --------------------
 
 - Improve log output if a job is blocking a cursor.
 
 - Simplify the connection rotation logic and stale lock logic to avoid race conditions.
 
-0.12.9 (2024-01-06)
+0.12.9 (2025-01-06)
 -------------------
 
 - Improve log output when a job is marked lost.
