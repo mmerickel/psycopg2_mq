@@ -23,10 +23,11 @@ from .trigger import Trigger
 from .util import class_name, get_next_rrule_time, int_to_datetime, safe_object
 
 DEFAULT_MAINTENANCE_TIMEOUT = 60
-DEFAULT_RETRY_DELAY = 5
-DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_JITTER = 1
 DEFAULT_LOCK_KEY = 1250360252  # selected via random.randint(0, 2**31-1)
+
+# lazy backoff algorithm for up to 60 seconds
+DEFAULT_RETRY_INTERVALS = (1, 3, 5, 10, 15, 30)
 
 
 log = __import__('logging').getLogger(__name__)
@@ -87,8 +88,7 @@ class MQWorker:
         engine,
         queues,
         model,
-        retry_attempts=DEFAULT_RETRY_ATTEMPTS,
-        retry_delay=DEFAULT_RETRY_DELAY,
+        retry_intervals=DEFAULT_RETRY_INTERVALS,
         timeout=DEFAULT_MAINTENANCE_TIMEOUT,
         jitter=DEFAULT_JITTER,
         lock_key=DEFAULT_LOCK_KEY,
@@ -101,13 +101,10 @@ class MQWorker:
         self._queues = queues
         self._model = model
 
-        self._retry_attempts = retry_attempts
-        if isinstance(retry_delay, timedelta):
-            retry_delay = retry_delay.total_seconds()
-        self._retry_delay_secs = retry_delay
-        if not isinstance(timeout, timedelta):
-            timeout = timedelta(seconds=timeout)
-        self._maintenance_timeout = timeout
+        self._retry_intervals = [
+            to_timedelta(x).total_seconds() for x in retry_intervals
+        ]
+        self._maintenance_timeout = to_timedelta(timeout)
         self._jitter = jitter
         self._lock_key = lock_key
 
@@ -197,6 +194,29 @@ def guess_worker_name():
     hostname = platform.node()
     pid = os.getpid()
     return f'{hostname}.{pid}'
+
+
+def to_timedelta(x):
+    if isinstance(x, timedelta):
+        return x
+    return timedelta(seconds=x)
+
+
+def iter_attempts(ctx):
+    intervals = ctx._retry_intervals
+    max_attempts = len(intervals)
+    for idx, delay in enumerate(intervals):
+        delay += random.uniform(0, ctx._jitter)
+        yield Attempt(idx, idx + 1 == max_attempts, delay)
+        time.sleep(delay)
+    raise RuntimeError(f'failed to retry operation with {max_attempts} attempts')
+
+
+class Attempt:
+    def __init__(self, index, is_last_attempt, next_delay):
+        self.index = index
+        self.is_last_attempt = is_last_attempt
+        self.next_delay = next_delay
 
 
 @contextmanager
@@ -291,37 +311,33 @@ def rotate_listener_dbconn(ctx):
         ctx._listener_dbconn.close()
         ctx._listener_dbconn = None
 
-    attempt = 0
-    attempts = ctx._retry_attempts + 1
-    while attempt < attempts:
-        attempt += 1
-
+    for attempt in iter_attempts(ctx):
         try:
             conn = ctx._engine.connect()
             assert conn.dialect.driver == 'psycopg2'
             conn.detach()
-            conn = ctx._listener_dbconn = conn.connection.dbapi_connection
+            conn = conn.connection.dbapi_connection
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
             with conn.cursor() as curs:
                 for queue in ctx._queues.keys():
                     curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
             break
         except Exception as ex:
-            if attempt == attempts:
+            if attempt.is_last_attempt:
                 log.exception(
-                    'failed to reconnect listener after %s attempts, aborting', attempts
+                    'failed to reconnect listener after %s attempts, aborting',
+                    attempt.index + 1,
                 )
                 raise
 
             else:
-                delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
                 log.info(
                     'retrying listener connection in %.3f seconds, error=%s',
-                    delay,
+                    attempt.next_delay,
                     str(ex).strip(),
                 )
-                time.sleep(delay)
 
+    ctx._listener_dbconn = conn
     ctx._connect_time = ctx._now()
     log.info('listener connected')
 
@@ -351,23 +367,22 @@ def retry_dbconn(fn):
         if 'db' in kwargs and retry:
             raise ValueError('cannot set retry when active db is manually supplied')
 
-        attempt = 0
-        attempts = (ctx._retry_attempts if retry else 0) + 1
-        while attempt < attempts:
-            attempt += 1
+        if not retry:
+            return fn(ctx, *args, **kwargs)
 
+        for attempt in iter_attempts(ctx):
             try:
                 return fn(ctx, *args, **kwargs)
             except sa.exc.DBAPIError as ex:
                 if not ctx.is_retryable_error(ex):
                     raise
 
-                if attempt == attempts:
+                if attempt.is_last_attempt:
                     log.exception(
                         'retryable error occurred while executing fn=%s and'
                         ' could not recover after %s attempts, error="%s"',
                         fn.__qualname__,
-                        attempts,
+                        attempt.index + 1,
                         str(ex).strip(),
                     )
                     raise
@@ -377,10 +392,9 @@ def retry_dbconn(fn):
                         'failed to invoke fn=%s but will retry in %.3f seconds'
                         ',  error=%s',
                         fn.__qualname__,
+                        attempt.next_delay,
                         str(ex).strip(),
                     )
-                    delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
-                    time.sleep(delay)
 
     return wrapper
 
