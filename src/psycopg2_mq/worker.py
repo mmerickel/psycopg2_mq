@@ -164,7 +164,7 @@ class MQWorker:
         }
 
     def is_retryable_error(self, ex):
-        if isinstance(sa.exc.DBAPIError) and ex.connection_invalidated:
+        if isinstance(ex, sa.exc.DBAPIError) and ex.connection_invalidated:
             return True
         return False
 
@@ -296,11 +296,6 @@ def rotate_listener_dbconn(ctx):
     while attempt < attempts:
         attempt += 1
 
-        if attempt > 1:
-            delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
-            log.info('retrying listener connection after %.3f seconds', delay)
-            time.sleep(delay)
-
         try:
             conn = ctx._engine.connect()
             assert conn.dialect.driver == 'psycopg2'
@@ -311,15 +306,21 @@ def rotate_listener_dbconn(ctx):
                 for queue in ctx._queues.keys():
                     curs.execute(f'LISTEN {ctx._model.channel_prefix}{queue};')
             break
-        except Exception:
+        except Exception as ex:
             if attempt == attempts:
                 log.exception(
                     'failed to reconnect listener after %s attempts, aborting', attempts
                 )
                 raise
+
             else:
-                # log the failure and try again
-                log.info('failed to reconnect listener', exc_info=1)
+                delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
+                log.info(
+                    'retrying listener connection in %.3f seconds, error=%s',
+                    delay,
+                    str(ex).strip(),
+                )
+                time.sleep(delay)
 
     ctx._connect_time = ctx._now()
     log.info('listener connected')
@@ -355,15 +356,6 @@ def retry_dbconn(fn):
         while attempt < attempts:
             attempt += 1
 
-            if attempt > 1:
-                delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
-                log.info(
-                    'retrying fn=%s after %.3f seconds',
-                    fn.__qualname__,
-                    delay,
-                )
-                time.sleep(delay)
-
             try:
                 return fn(ctx, *args, **kwargs)
             except sa.exc.DBAPIError as ex:
@@ -379,9 +371,16 @@ def retry_dbconn(fn):
                         str(ex).strip(),
                     )
                     raise
+
                 else:
-                    # log the failure and try again
-                    log.info('failed to retry fn=%s', fn.__qualname__, exc_info=1)
+                    log.info(
+                        'failed to invoke fn=%s but will retry in %.3f seconds'
+                        ',  error=%s',
+                        fn.__qualname__,
+                        str(ex).strip(),
+                    )
+                    delay = ctx._retry_delay_secs + random.uniform(0, ctx._jitter)
+                    time.sleep(delay)
 
     return wrapper
 
