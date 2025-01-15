@@ -119,7 +119,7 @@ def make_default_model(metadata, JobStates=JobStates):
                 cursor_key,
                 postgresql_where=sa.and_(
                     cursor_key.isnot(None),
-                    state.in_([JobStates.RUNNING, JobStates.LOST])
+                    state.in_([JobStates.RUNNING, JobStates.LOST]),
                 ),
                 unique=True,
             ),

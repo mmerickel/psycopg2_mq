@@ -14,6 +14,17 @@ from .util import (
 log = __import__('logging').getLogger(__name__)
 
 
+def append_unique_values_to_trace(trace, key, values):
+    if not values:
+        return trace
+    if trace is None:
+        trace = {}
+    return {
+        **trace,
+        key: list(set(trace.get(key, [])).union(values)),
+    }
+
+
 class MQSource:
     def __init__(
         self,
@@ -69,6 +80,9 @@ class MQSource:
             args = {}
         if job_kwargs is None:
             job_kwargs = {}
+
+        trace = append_unique_values_to_trace(trace, 'mq_schedule_ids', schedule_ids)
+        trace = append_unique_values_to_trace(trace, 'mq_listener_ids', listener_ids)
 
         Job = self.model.Job
         JobListenerLink = self.model.JobListenerLink
@@ -160,12 +174,20 @@ class MQSource:
                     job.scheduled_time = when
                     notify = True
 
+                # merge traces automatically regardless of the conflict resolver
+                job.trace = append_unique_values_to_trace(
+                    job.trace, 'mq_schedule_ids', schedule_ids
+                )
+                job.trace = append_unique_values_to_trace(
+                    job.trace, 'mq_listener_ids', listener_ids
+                )
+
                 # invoke a callable to update properties on the job
                 if conflict_resolver is not None:
                     conflict_resolver(job)
 
-                    if self.transaction_manager:
-                        mark_changed(self.dbsession)
+                if self.transaction_manager:
+                    mark_changed(self.dbsession)
 
                 break
 
@@ -255,10 +277,6 @@ class MQSource:
 
         job = self.get_job(job_id)
         kw = {}
-        if self.model.JobListenerLink is not None:
-            kw['listener_ids'] = [link.listener_id for link in job.listener_links]
-        if self.model.JobScheduleLink is not None:
-            kw['schedule_ids'] = [link.schedule_id for link in job.schedule_links]
 
         trace = deepcopy(job.trace or {})
         trace['mq_source_job_id'] = job_id

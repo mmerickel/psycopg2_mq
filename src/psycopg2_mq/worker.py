@@ -513,31 +513,13 @@ def claim_pending_job(ctx, *, db, model):
         )
         .subquery()
     )
-    listener_sq = (
-        db.query(
-            model.JobListenerLink.job_id,
-            sa.func.array_agg(model.JobListenerLink.listener_id).label('listener_ids'),
-        )
-        .group_by(model.JobListenerLink.job_id)
-        .subquery()
-    )
-    schedule_sq = (
-        db.query(
-            model.JobScheduleLink.job_id,
-            sa.func.array_agg(model.JobScheduleLink.schedule_id).label('schedule_ids'),
-        )
-        .group_by(model.JobScheduleLink.job_id)
-        .subquery()
-    )
-    result = (
-        db.query(model.Job, listener_sq.c.listener_ids, schedule_sq.c.schedule_ids)
+    job = (
+        db.query(model.Job)
         .with_for_update(of=model.Job, skip_locked=True)
         .outerjoin(
             running_cursor_sq,
             running_cursor_sq.c.cursor_key == model.Job.cursor_key,
         )
-        .outerjoin(listener_sq, listener_sq.c.job_id == model.Job.id)
-        .outerjoin(schedule_sq, schedule_sq.c.job_id == model.Job.id)
         .filter(
             model.Job.state == model.JobStates.PENDING,
             model.Job.queue.in_(ctx._queues.keys()),
@@ -551,12 +533,9 @@ def claim_pending_job(ctx, *, db, model):
         .limit(1)
         .one_or_none()
     )
-    if result is None:
+    if job is None:
         return None
 
-    # we'd like to use result.Job here but if a user renamed the job model in their
-    # own copy of MQModel then it won't match up
-    job = result[0]
     cursor = None
     if job.cursor_key is not None:
         cursor = (
@@ -593,8 +572,8 @@ def claim_pending_job(ctx, *, db, model):
         args=job.args,
         cursor_key=job.cursor_key,
         cursor=cursor,
-        listener_ids=result.listener_ids,
-        schedule_ids=result.schedule_ids,
+        listener_ids=job.trace.get('mq_listener_ids') if job.trace else None,
+        schedule_ids=job.trace.get('mq_schedule_ids') if job.trace else None,
         trace=job.trace,
     )
 
