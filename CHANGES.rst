@@ -1,6 +1,44 @@
 Changes
 =======
 
+0.13 (2025-01-14)
+-----------------
+
+- The ``job.trace`` is now populated automatically with ``mq_schedule_ids`` and
+  ``mq_listener_ids`` which indicate where the job came from. These values are used
+  to populate the ``JobContext.schedule_ids`` and ``JobContext.listener_ids`` fields
+  going forward which is more performant than querying the relationships directly.
+
+- [breaking] The above change means that jobs that were scheduled for the future may
+  have be missing this metadata unless you add shims to your code to find the
+  ``schedule_ids`` and ``listener_ids`` from the database tables or populate the
+  ``trace`` via a migration yourself. New jobs created post-update will be fine.
+
+- [breaking] The ``mq_lock`` table has undergone a small change that will require
+  turning off workers (but not callers) temporarily.
+
+- [model migration] Dropped the ``queue`` column from ``mq_lock`` and added a new
+  ``ns`` column. Again we can drop the table because all workers should be disabled
+  first. Possible migration::
+
+    drop table mq_lock;
+    create table mq_lock (
+      ns text not null,
+      key text not null,
+      lock_id int not null,
+      worker text not null,
+      primary key (ns, key)
+    );
+
+- [model migration] Changed an index on the ``mq_job`` table to include lost jobs
+  which the query optimizer prefers. Possible migration::
+
+    drop index uq_mq_job_running_cursor_key;
+    create unique index uq_mq_job_active_cursor_key on mq_job (cursor_key)
+      where cursor_key is not null and state in ('running', 'lost');
+
+- Fix deprecation warnings on Python 3.13 about ``datetime.utcnow()`` usage.
+
 0.12.12 (2025-01-13)
 --------------------
 
