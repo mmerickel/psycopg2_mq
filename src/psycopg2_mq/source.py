@@ -1,11 +1,15 @@
 from copy import deepcopy
-from datetime import datetime
 import json
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert
 from zope.sqlalchemy import mark_changed
 
-from .util import datetime_to_int, get_next_rrule_time
+from .util import (
+    datetime_isoformat,
+    datetime_to_int,
+    datetime_utcnow,
+    get_next_rrule_time,
+)
 
 log = __import__('logging').getLogger(__name__)
 
@@ -58,7 +62,7 @@ class MQSource:
 
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
         if when is None:
             when = now
         if args is None:
@@ -247,7 +251,7 @@ class MQSource:
 
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
 
         job = self.get_job(job_id)
         kw = {}
@@ -305,7 +309,7 @@ class MQSource:
 
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
 
         job = self.get_job(job_id, for_update=True)
         if job.state not in {
@@ -329,7 +333,7 @@ class MQSource:
 
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
         epoch_seconds = datetime_to_int(now)
         payload = json.dumps({'s': None, 't': epoch_seconds})
         self.dbsession.execute(
@@ -357,7 +361,7 @@ class MQSource:
 
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
         if args is None:
             args = {}
         if schedule_kwargs is None:
@@ -417,7 +421,7 @@ class MQSource:
     def enable_schedule(self, schedule_id, *, now=None, reload=True):
         """Enable a schedule for execution at its next scheduled time."""
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
         schedule = self.get_schedule(schedule_id, for_update=True)
         if schedule.is_enabled:
             log.info('schedule=%s is already enabled', schedule_id)
@@ -443,7 +447,7 @@ class MQSource:
 
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
         if when is None:
             when = now
 
@@ -489,7 +493,7 @@ class MQSource:
 
         """
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
         if args is None:
             args = {}
         if listener_kwargs is None:
@@ -547,7 +551,7 @@ class MQSource:
     def enable_listener(self, listener_id, *, now=None):
         """Enable a listener for execution when the next event is dispatched."""
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
         listener = self.get_listener(listener_id, for_update=True)
         if listener.is_enabled:
             log.info('listener=%s is already enabled', listener_id)
@@ -557,7 +561,7 @@ class MQSource:
 
     def emit_event(self, name, data, *, now=None, trace=None):
         if now is None:
-            now = datetime.utcnow()
+            now = datetime_utcnow()
 
         job_ids = []
         for listener in self.query_listeners.filter(
@@ -573,6 +577,7 @@ class MQSource:
             event = {
                 'name': name,
                 'listener_id': listener.id,
+                'now': datetime_isoformat(now),
                 'data': data,
             }
 

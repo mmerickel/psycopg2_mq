@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from copy import deepcopy
 import pytest
 import threading
 import time
@@ -79,12 +80,16 @@ def test_listener_integration(model, dbsession, worker_proxy):
         )
         assert job.queue == 'listener'
         assert job.method == 'listener_echo'
-        assert job.args == {'a': 1, 'event': expected_event}
+        args = deepcopy(job.args)
+        del args['event']['now']
+        assert args == {'a': 1, 'event': expected_event}
         job_id = job.id
 
     with wait_for_job(source, job_id) as job:
         assert job.state == model.JobStates.COMPLETED
-        assert job.result == {
+        result = deepcopy(job.result)
+        del result['args']['event']['now']
+        assert result == {
             'queue': 'listener',
             'method': 'listener_echo',
             'args': {'a': 1, 'event': expected_event},

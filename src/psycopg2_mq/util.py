@@ -1,10 +1,20 @@
 import builtins
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dateutil.rrule import rrulestr
 from dateutil.tz import UTC
 
 EPOCH = datetime(1970, 1, 1)
+
+
+def datetime_utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def datetime_isoformat(val):
+    if not val.tzinfo:
+        val = val.replace(tzinfo=timezone.utc)
+    return val.isoformat()
 
 
 def datetime_to_int(value):

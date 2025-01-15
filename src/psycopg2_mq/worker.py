@@ -20,7 +20,13 @@ import traceback
 
 from .source import MQSource
 from .trigger import Trigger
-from .util import class_name, get_next_rrule_time, int_to_datetime, safe_object
+from .util import (
+    class_name,
+    datetime_utcnow,
+    get_next_rrule_time,
+    int_to_datetime,
+    safe_object,
+)
 
 DEFAULT_MAINTENANCE_TIMEOUT = 60
 DEFAULT_JITTER = 1
@@ -82,7 +88,7 @@ class FailedJobError(Exception):
 
 
 class MQWorker:
-    _now = datetime.utcnow  # for testing
+    _now = staticmethod(datetime_utcnow)  # for testing
 
     def __init__(
         self,
@@ -498,10 +504,7 @@ def acquire_worker_lock(ctx, attempts=3):
 
 
 @dbsession
-def claim_pending_job(ctx, *, now=None, db, model):
-    if now is None:
-        now = ctx._now()
-
+def claim_pending_job(ctx, *, db, model):
     running_cursor_sq = (
         db.query(model.Job.cursor_key)
         .filter(
@@ -538,7 +541,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
         .filter(
             model.Job.state == model.JobStates.PENDING,
             model.Job.queue.in_(ctx._queues.keys()),
-            model.Job.scheduled_time <= now,
+            model.Job.scheduled_time <= ctx._now(),
             running_cursor_sq.c.cursor_key.is_(None),
         )
         .order_by(
@@ -573,7 +576,7 @@ def claim_pending_job(ctx, *, now=None, db, model):
 
     job.lock_id = ctx._lock_id
     job.state = model.JobStates.RUNNING
-    job.start_time = now
+    job.start_time = ctx._now()
     job.worker = ctx._name
 
     log.info(
