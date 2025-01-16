@@ -595,10 +595,12 @@ def claim_pending_job(ctx, *, db, model):
     job.worker = ctx._name
 
     log.info(
-        'beginning job=%s queue=%s method=%s %.3f seconds after scheduled start',
+        'beginning job=%s queue=%s method=%s cursor=%r %.3f seconds after'
+        ' scheduled start',
         job.id,
         job.queue,
         job.method,
+        job.cursor_key,
         (job.start_time - job.scheduled_time).total_seconds(),
     )
     return JobContext(

@@ -125,29 +125,20 @@ class MQSource:
                 .returning(Job.id)
             ).scalar()
             if job_id is not None:
-                if schedule_ids:
-                    log.info(
-                        'created new job=%s on queue=%s, method=%s from schedule=%s',
-                        job_id,
-                        queue,
-                        method,
-                        schedule_ids,
-                    )
-                elif listener_ids:
-                    log.info(
-                        'created new job=%s on queue=%s, method=%s from listener=%s',
-                        job_id,
-                        queue,
-                        method,
-                        listener_ids,
-                    )
-                else:
-                    log.info(
-                        'created new job=%s on queue=%s, method=%s',
-                        job_id,
-                        queue,
-                        method,
-                    )
+                log_msg = 'created new job=%s on queue=%s method=%s'
+                log_args = [job_id, queue, method]
+                if cursor_key:
+                    log_msg += ' cursor=%r'
+                    log_args.append(cursor_key)
+                if schedule_ids or listener_ids:
+                    log_msg += ' from'
+                    if schedule_ids:
+                        log_msg += ' schedule=%s'
+                        log_args.append(schedule_ids)
+                    if listener_ids:
+                        log_msg += ' listener=%s'
+                        log_args.append(listener_ids)
+                log.info(log_msg, *log_args)
                 notify = True
                 break
 

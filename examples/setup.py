@@ -24,7 +24,7 @@ def main():
         source = MQSource(dbsession=db, model=model)
 
         listener = source.add_listener(
-            'mq_job_complete.dummy.echo',
+            'mq.job_finished.completed.dummy.echo',
             'dummy',
             'listener_echo',
             {'source': 'echo-listener'},
