@@ -127,11 +127,11 @@ class MQWorker:
 
         self._running = False
 
-        self._connect_time = None
         self._listener_dbconn = None
         self._lock_id = None
         self._shutdown_trigger = None
         self._job_trigger = None
+        self._last_listener_activity_time = datetime.min
         self._next_job_time = datetime.max
         self._next_schedule_time = datetime.max
         self._next_maintenance_time = datetime.min
@@ -346,7 +346,7 @@ def rotate_listener_dbconn(ctx):
                 )
 
     ctx._listener_dbconn = conn
-    ctx._connect_time = ctx._now()
+    ctx._last_listener_activity_time = ctx._now()
     log.info('listener connected')
 
     # grab an advisory lock which can track our later activity
@@ -364,6 +364,14 @@ def rotate_listener_dbconn(ctx):
 
     # it's possible we missed some jobs while reconnecting so reinitialize
     set_next_job_time(ctx)
+
+
+def is_psycopg2_connection_closed_error(ex, conn):
+    # this is a little hairy but since we are using the raw psycopg2
+    # connection we cannot rely on sqlalchemy's nice error handling so
+    # we test the connection directly to see if it's closed and if it is then we
+    # ignore the specific error received
+    return isinstance(ex, psycopg2.OperationalError) and conn.closed
 
 
 def retry_dbconn(fn):
@@ -431,10 +439,13 @@ def dbsession(fn):
 
 @dbsession
 def run_maintenance(ctx, *, db, model):
+    log.debug('starting maintenance')
+    listener_keepalive(ctx)
     release_stale_locks(ctx, db=db, model=model)
     mark_lost_jobs(ctx, db=db, model=model)
     lock_scheduler_queues(ctx, db=db, model=model)
     set_next_job_time(ctx, db=db, model=model)
+    log.debug('completed maintenance')
 
     ctx._next_maintenance_time = ctx._now() + ctx._maintenance_timeout
 
@@ -501,6 +512,31 @@ def acquire_worker_lock(ctx, attempts=3):
     raise RuntimeError(
         f'failed to acquire unique worker advisory lock after {attempts} attempts'
     )
+
+
+def listener_keepalive(ctx):
+    # only run keepalive if we haven't had any listener activity in the last
+    # maintenance window
+    if ctx._last_listener_activity_time + ctx._maintenance_timeout > ctx._now():
+        return
+
+    # perform a manual keep-alive to prevent the connection from appearing idle
+    # to things like istio where client-side keep-alive doesn't appear to be enough
+    conn = ctx._listener_dbconn
+    try:
+        log.debug('sending keepalive')
+        with conn.cursor() as curs:
+            curs.execute('select 1')
+        ctx._last_listener_activity_time = ctx._now()
+    except Exception as ex:
+        if is_psycopg2_connection_closed_error(ex, conn):
+            log.info(
+                'listener connection closed unexpectedly, error=%s',
+                str(ex).strip(),
+            )
+            rotate_listener_dbconn(ctx)
+            return
+        raise
 
 
 @dbsession
@@ -993,12 +1029,10 @@ class NotifyEvent:
 def handle_notifies(ctx, conn):
     try:
         conn.poll()
-    except psycopg2.OperationalError as ex:
-        # this is a little hairy but since we are using the raw psycopg2
-        # connection we cannot rely on sqlalchemy's nice error handling so
-        # we test the connection directly to see if it's closed and if it is
-        # we reconnect
-        if conn.closed and conn is ctx._listener_dbconn:
+    except Exception as ex:
+        if conn is ctx._listener_dbconn and is_psycopg2_connection_closed_error(
+            ex, conn
+        ):
             log.info(
                 'listener connection closed unexpectedly, error=%s',
                 str(ex).strip(),
@@ -1112,6 +1146,8 @@ def eventloop(ctx):
             apply_schedules(ctx)
 
         elif event.type == ListenEventType.NOTIFY:
+            ctx._last_listener_activity_time = ctx._now()
+
             if event.next_job_time < ctx._next_job_time:
                 ctx._next_job_time = event.next_job_time
                 when = (event.next_job_time - ctx._now()).total_seconds()
