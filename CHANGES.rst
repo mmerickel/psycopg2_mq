@@ -1,6 +1,11 @@
 Changes
 =======
 
+0.13.2 (2025-01-16)
+-------------------
+
+- Output a nicer log message containing the cursor key when creating a new job.
+
 0.13.1 (2025-01-16)
 -------------------
 
