@@ -1,6 +1,13 @@
 Changes
 =======
 
+0.13.1 (2025-01-16)
+-------------------
+
+- Modify the maintenance loop to run an explicit ``select 1`` on the listener
+  connection periodically during idle periods to ensure the listener is still alive
+  to any tcp proxies like istio when jobs are sparse.
+
 0.13 (2025-01-14)
 -----------------
 
