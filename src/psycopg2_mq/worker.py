@@ -929,9 +929,11 @@ def lock_scheduler_queues(ctx, *, db, model, now=None):
             s.rrule, s.created_time, stale_cutoff_time
         )
         log.warning(
-            'execution time on schedule=%s is very old (%s seconds), skipping '
-            'to next time=%s',
+            'execution time on schedule=%s, queue=%s, method=%s is very old'
+            ' (%s seconds), skipping to next time=%s',
             s.id,
+            s.queue,
+            s.method,
             (now - s.next_execution_time).total_seconds(),
             next_execution_time,
         )
