@@ -1,6 +1,11 @@
 Changes
 =======
 
+0.13.4 (2025-01-29)
+-------------------
+
+- Improve log message when a schedule is missed because no workers were running.
+
 0.13.3 (2025-01-29)
 -------------------
 
