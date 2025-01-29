@@ -1,6 +1,11 @@
 Changes
 =======
 
+0.13.3 (2025-01-29)
+-------------------
+
+- Fix a bad log message when a queue is blocked on a lost cursor.
+
 0.13.2 (2025-01-16)
 -------------------
 

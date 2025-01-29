@@ -758,6 +758,8 @@ def mark_lost_jobs(ctx, *, db, model):
             'job=%s queue=%s method=%s is lost and blocking execution of cursor=%s'
             ' for %d seconds',
             job.id,
+            job.queue,
+            job.method,
             job.cursor_key,
             (ctx._now() - job.end_time).total_seconds(),
         )
