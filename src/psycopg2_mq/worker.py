@@ -407,7 +407,8 @@ def retryable(fn):
 
                 else:
                     log.info(
-                        'failed to invoke fn=%s but will retry in %.3f seconds error=%r',
+                        'failed to invoke fn=%s but will retry in %.3f seconds'
+                        ' error=%r',
                         fn.__qualname__,
                         attempt.next_delay,
                         ex,
