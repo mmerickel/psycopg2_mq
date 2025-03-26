@@ -171,6 +171,8 @@ class MQWorker:
     def is_retryable_error(self, ex):
         if isinstance(ex, sa.exc.DBAPIError) and ex.connection_invalidated:
             return True
+        if isinstance(ex, sa.exc.IntegrityError):
+            return True
         return False
 
     def get_status(self):
@@ -340,9 +342,9 @@ def rotate_listener_dbconn(ctx):
 
             else:
                 log.info(
-                    'retrying listener connection in %.3f seconds, error=%s',
+                    'retrying listener connection in %.3f seconds, error=%r',
                     attempt.next_delay,
-                    str(ex).strip(),
+                    ex,
                 )
 
     ctx._listener_dbconn = conn
@@ -374,7 +376,7 @@ def is_psycopg2_connection_closed_error(ex, conn):
     return isinstance(ex, psycopg2.OperationalError) and conn.closed
 
 
-def retry_dbconn(fn):
+def retryable(fn):
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
         retry = 'db' not in kwargs
@@ -389,34 +391,33 @@ def retry_dbconn(fn):
         for attempt in iter_attempts(ctx):
             try:
                 return fn(ctx, *args, **kwargs)
-            except sa.exc.DBAPIError as ex:
+            except Exception as ex:
                 if not ctx.is_retryable_error(ex):
                     raise
 
                 if attempt.is_last_attempt:
                     log.exception(
                         'retryable error occurred while executing fn=%s and'
-                        ' could not recover after %s attempts, error=%s',
+                        ' could not recover after %s attempts, error=%r',
                         fn.__qualname__,
                         attempt.index + 1,
-                        str(ex).strip(),
+                        ex,
                     )
                     raise
 
                 else:
                     log.info(
-                        'failed to invoke fn=%s but will retry in %.3f seconds'
-                        ',  error=%s',
+                        'failed to invoke fn=%s but will retry in %.3f seconds error=%r',
                         fn.__qualname__,
                         attempt.next_delay,
-                        str(ex).strip(),
+                        ex,
                     )
 
     return wrapper
 
 
 def dbsession(fn):
-    @retry_dbconn
+    @retryable
     @functools.wraps(fn)
     def wrapper(ctx, *args, **kwargs):
         # support external db and acting as a passthrough
@@ -530,10 +531,7 @@ def listener_keepalive(ctx):
         ctx._last_listener_activity_time = ctx._now()
     except Exception as ex:
         if is_psycopg2_connection_closed_error(ex, conn):
-            log.info(
-                'listener connection closed unexpectedly, error=%s',
-                str(ex).strip(),
-            )
+            log.info('listener connection closed unexpectedly, error=%r', ex)
             rotate_listener_dbconn(ctx)
             return
         raise
@@ -544,17 +542,21 @@ def claim_pending_job(ctx, *, db, model):
     running_cursor_sq = (
         db.query(model.Job.cursor_key)
         .filter(
-            model.Job.state.in_([model.JobStates.RUNNING, model.JobStates.LOST]),
             model.Job.cursor_key.isnot(None),
+            model.Job.state.in_([model.JobStates.RUNNING, model.JobStates.LOST]),
         )
         .subquery()
     )
-    job = (
-        db.query(model.Job)
+    result = (
+        db.query(model.Job, model.JobCursor.properties)
         .with_for_update(of=model.Job, skip_locked=True)
         .outerjoin(
             running_cursor_sq,
             running_cursor_sq.c.cursor_key == model.Job.cursor_key,
+        )
+        .outerjoin(
+            model.JobCursor,
+            model.JobCursor.key == model.Job.cursor_key,
         )
         .filter(
             model.Job.state == model.JobStates.PENDING,
@@ -569,25 +571,14 @@ def claim_pending_job(ctx, *, db, model):
         .limit(1)
         .one_or_none()
     )
-    if job is None:
+    if result is None:
         return None
+    job, cursor = result
 
-    cursor = None
-    if job.cursor_key is not None:
-        cursor = (
-            db.query(model.JobCursor)
-            .filter(model.JobCursor.key == job.cursor_key)
-            .first()
-        )
-        if cursor is not None:
-            cursor = cursor.properties
-        else:
-            cursor = {}
-
-        # since we commit before returning the context, it's safe to
-        # not make a deep copy here because we know the job won't run
-        # and mutate the content until after the snapshot is committed
-        job.cursor_snapshot = cursor
+    # since we commit before returning the context, it's safe to
+    # not make a deep copy here because we know the job won't run
+    # and mutate the content until after the snapshot is committed
+    job.cursor_snapshot = cursor
 
     job.lock_id = ctx._lock_id
     job.state = model.JobStates.RUNNING
@@ -821,7 +812,11 @@ def set_next_job_time(ctx, *, db, model):
 
 def enqueue_jobs(ctx):
     while ctx._running and len(ctx._active_jobs) < ctx._threads:
-        job = claim_pending_job(ctx)
+        try:
+            job = claim_pending_job(ctx)
+        except Exception as ex:
+            log.info('failed to claim a new job due to unhandled error=%r', ex)
+            break
         if job is None:
             break
         queue = ctx._queues[job.queue]
@@ -1039,10 +1034,7 @@ def handle_notifies(ctx, conn):
         if conn is ctx._listener_dbconn and is_psycopg2_connection_closed_error(
             ex, conn
         ):
-            log.info(
-                'listener connection closed unexpectedly, error=%s',
-                str(ex).strip(),
-            )
+            log.info('listener connection closed unexpectedly, error=%r', ex)
             rotate_listener_dbconn(ctx)
             return CONTINUE_EVENT
         raise
