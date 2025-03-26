@@ -1,6 +1,15 @@
 Changes
 =======
 
+0.13.5 (2025-03-26)
+-------------------
+
+- Fix a race that can occur when non-collapsible jobs are scheduled on the same cursor.
+  If multiple workers try to grab jobs they can end up crashing by violating the
+  constraint that only one job may run on a cursor at a time. The crash would put
+  the entire worker in a bad state and impact running jobs so this fix prevents that
+  bad behavior.
+
 0.13.4 (2025-01-29)
 -------------------
 
