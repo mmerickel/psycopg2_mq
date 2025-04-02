@@ -20,11 +20,31 @@ def test_simple_integration(model, dbsession, worker_proxy):
 
     with wait_for_job(source, job_id) as job:
         assert job.state == model.JobStates.COMPLETED
-        assert job.result == {
-            'queue': 'dummy',
-            'method': 'echo',
-            'args': {'message': 'hello world'},
+        assert job.result['queue'] == 'dummy'
+        assert job.result['method'] == 'echo'
+        assert job.result['args'] == {'message': 'hello world'}
+        assert job.start_time is not None
+        assert job.end_time is not None
+
+
+def test_cursor_integration(model, dbsession, worker_proxy):
+    worker_proxy.start(
+        queues={
+            'dummy': DummyQueue(),
         }
+    )
+
+    source = MQSource(dbsession=dbsession, model=model)
+    with dbsession.begin():
+        job_id = source.call('dummy', 'echo', {'message': 'hello world'}, cursor_key='foo')
+
+    with wait_for_job(source, job_id) as job:
+        assert job.state == model.JobStates.COMPLETED
+        assert job.result['queue'] == 'dummy'
+        assert job.result['method'] == 'echo'
+        assert job.result['args'] == {'message': 'hello world'}
+        assert job.result['cursor_key'] == 'foo'
+        assert job.result['cursor'] == {}
         assert job.start_time is not None
         assert job.end_time is not None
 
@@ -52,11 +72,9 @@ def test_listener_integration(model, dbsession, worker_proxy):
 
     with wait_for_job(source, job_id) as job:
         assert job.state == model.JobStates.COMPLETED
-        assert job.result == {
-            'queue': 'dummy',
-            'method': 'echo',
-            'args': {'message': 'hello world'},
-        }
+        assert job.result['queue'] == 'dummy'
+        assert job.result['method'] == 'echo'
+        assert job.result['args'] == {'message': 'hello world'}
         assert job.start_time is not None
         assert job.end_time is not None
 
@@ -89,11 +107,9 @@ def test_listener_integration(model, dbsession, worker_proxy):
         assert job.state == model.JobStates.COMPLETED
         result = deepcopy(job.result)
         del result['args']['event']['now']
-        assert result == {
-            'queue': 'listener',
-            'method': 'listener_echo',
-            'args': {'a': 1, 'event': expected_event},
-        }
+        assert result['queue'] == 'listener'
+        assert result['method'] == 'listener_echo'
+        assert result['args'] == {'a': 1, 'event': expected_event}
         assert job.start_time is not None
         assert job.end_time is not None
 
@@ -104,6 +120,9 @@ class DummyQueue:
             'queue': job.queue,
             'method': job.method,
             'args': job.args,
+            'cursor': job.cursor,
+            'cursor_key': job.cursor_key,
+            'trace': job.trace,
         }
 
 

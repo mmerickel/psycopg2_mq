@@ -581,6 +581,10 @@ def claim_pending_job(ctx, *, db, model):
     # and mutate the content until after the snapshot is committed
     job.cursor_snapshot = cursor
 
+    # initialize an empty cursor if it didn't already exist
+    if job.cursor_key is not None and cursor is None:
+        cursor = {}
+
     job.lock_id = ctx._lock_id
     job.state = model.JobStates.RUNNING
     job.start_time = ctx._now()
