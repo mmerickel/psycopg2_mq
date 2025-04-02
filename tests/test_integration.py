@@ -36,7 +36,9 @@ def test_cursor_integration(model, dbsession, worker_proxy):
 
     source = MQSource(dbsession=dbsession, model=model)
     with dbsession.begin():
-        job_id = source.call('dummy', 'echo', {'message': 'hello world'}, cursor_key='foo')
+        job_id = source.call(
+            'dummy', 'echo', {'message': 'hello world'}, cursor_key='foo'
+        )
 
     with wait_for_job(source, job_id) as job:
         assert job.state == model.JobStates.COMPLETED

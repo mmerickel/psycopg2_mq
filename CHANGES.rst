@@ -1,6 +1,14 @@
 Changes
 =======
 
+0.13.6 (2025-04-02)
+-------------------
+
+- Fix a bug causing the ``job.cursor`` value to be ``None`` instead of ``{}`` for the
+  first job spawned on a new cursor which forced the job to have to issue tests and
+  initialize the value itself which was a breaking issue. This issue was introduced
+  in 0.13.5.
+
 0.13.5 (2025-03-26)
 -------------------
 
